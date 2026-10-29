@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+
+# Data never enters git. It lives in Drive — see docs/data.md for the
+# folder, the exact filenames, and the command that regenerates each one.
+data/
+*.pgn
+*.pgn.zst
+*.csv.zst
+*.parquet
+*.npy
+*.memmap
+
+# Model artifacts never enter git. Released separately — see docs/data.md.
+checkpoints/
+*.pt
+*.safetensors
+
+# Notebooks
+.ipynb_checkpoints/
