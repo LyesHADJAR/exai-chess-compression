@@ -27,6 +27,12 @@ src = ["src", "scripts", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.isort]
+# Stated explicitly: without this, ruff classifies chessdt as first- or
+# third-party depending on whether it is installed, and CI disagrees with
+# a local checkout.
+known-first-party = ["chessdt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

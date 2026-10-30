@@ -6,6 +6,7 @@ trained on it, so these tests guard the format rather than merely exercising it.
 
 import chess
 import pytest
+
 from chessdt.constants import N_MOVES
 from chessdt.encoding import (
     BOARD_RECORD_BYTES,
