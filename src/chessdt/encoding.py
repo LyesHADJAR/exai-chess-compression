@@ -74,6 +74,13 @@ assert len(MOVE_VOCABULARY) == N_MOVES, (
 #:   byte   35     reserved, keeps the record even-width
 BOARD_RECORD_BYTES = 36
 
+#: How much of a record defines *which position this is*, for deduplication.
+#: Deliberately stops before the halfmove clock: the same position reached at
+#: a different move number is the same position, and hashing the counters in
+#: would defeat the deduplication entirely. The record is laid out so that
+#: position identity is a prefix of it.
+POSITION_IDENTITY_BYTES = 34
+
 _NO_EN_PASSANT = 255
 
 _CASTLING_BITS = (
