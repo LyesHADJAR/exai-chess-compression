@@ -1,11 +1,6 @@
 """Collection filters, tested without touching the network."""
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
-from measure_pass_rate import Tally, classify, initial_clock, parse_elo  # noqa: E402
+from chessdt.lichess import Tally, classify, initial_clock, parse_elo
 
 
 def headers(**overrides) -> dict:

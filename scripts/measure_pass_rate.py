@@ -17,15 +17,11 @@ encoding has to replay every game to reach a position per ply.
 """
 
 import argparse
-import io
 import sys
 import time
-import urllib.request
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import chess.pgn
-import zstandard
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -38,94 +34,7 @@ from chessdt.constants import (  # noqa: E402
     MIN_PLIES,
     TARGET_GAMES,
 )
-
-#: Terminations we keep. An abandoned game teaches nothing; a time forfeit is
-#: a real game that happened to end on the clock.
-GOOD_TERMINATIONS = {"Normal", "Time forfeit"}
-
-
-def initial_clock(time_control: str | None) -> int | None:
-    """Base seconds from a PGN TimeControl header, or None if it has none.
-
-    Headers look like "600+0" or "180+2". Correspondence games carry "-".
-    """
-    if not time_control or time_control == "-":
-        return None
-    base = time_control.split("+")[0]
-    return int(base) if base.isdigit() else None
-
-
-def parse_elo(value: str | None) -> int | None:
-    """Rating from a PGN Elo header. Unrated and provisional show as '?'."""
-    return int(value) if value and value.isdigit() else None
-
-
-@dataclass
-class Tally:
-    """Cumulative survivors at each filter stage, in the order applied."""
-
-    scanned: int = 0
-    rated: int = 0
-    rating_ok: int = 0
-    clock_ok: int = 0
-    termination_ok: int = 0
-    plies: list[int] = field(default_factory=list)
-
-    @property
-    def pass_rate(self) -> float:
-        return self.termination_ok / self.scanned if self.scanned else 0.0
-
-
-def classify(headers, tally: Tally) -> bool:
-    """Apply the filters in order, recording how many survive each one."""
-    tally.scanned += 1
-
-    white = parse_elo(headers.get("WhiteElo"))
-    black = parse_elo(headers.get("BlackElo"))
-    if white is None or black is None:
-        return False
-    tally.rated += 1
-
-    if white < MIN_ELO or black < MIN_ELO:
-        return False
-    tally.rating_ok += 1
-
-    clock = initial_clock(headers.get("TimeControl"))
-    if clock is None or clock < MIN_CLOCK_SECONDS:
-        return False
-    tally.clock_ok += 1
-
-    if headers.get("Termination") not in GOOD_TERMINATIONS:
-        return False
-    tally.termination_ok += 1
-    return True
-
-
-class CountingReader(io.RawIOBase):
-    """Wraps a byte stream and records how many compressed bytes were pulled."""
-
-    def __init__(self, stream):
-        self._stream = stream
-        self.bytes_read = 0
-
-    def readable(self) -> bool:
-        return True
-
-    def readinto(self, buffer) -> int:
-        chunk = self._stream.read(len(buffer))
-        if not chunk:
-            return 0
-        buffer[: len(chunk)] = chunk
-        self.bytes_read += len(chunk)
-        return len(chunk)
-
-
-def open_dump(url: str) -> tuple[io.TextIOBase, CountingReader]:
-    """Open a remote .pgn.zst as decompressed text, without touching disk."""
-    response = urllib.request.urlopen(url)  # noqa: S310 — fixed https URL
-    counter = CountingReader(response)
-    reader = zstandard.ZstdDecompressor().stream_reader(counter)
-    return io.TextIOWrapper(reader, encoding="utf-8", errors="replace"), counter
+from chessdt.lichess import CountingReader, Tally, classify, open_dump  # noqa: E402
 
 
 def report(tally: Tally, counter: CountingReader, elapsed: float) -> None:
