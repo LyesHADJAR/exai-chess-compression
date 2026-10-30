@@ -20,6 +20,16 @@ POSITION_TOKENS = 77
 #: Generated rather than hardcoded; this is the expected length.
 N_MOVES = 1968
 
+# ── Reference dump ────────────────────────────────────────────────────────
+
+#: Figures read off database.lichess.org on 2026-10-29. The game count is
+#: unfiltered: every rating and time control, bullet included.
+DUMP_MONTH = "2026-09"
+DUMP_GAMES = 89_616_462
+DUMP_SIZE_GB = 29.2
+DUMP_URL = f"https://database.lichess.org/standard/lichess_db_standard_rated_{DUMP_MONTH}.pgn.zst"
+
+
 # ── Collection filters ────────────────────────────────────────────────────
 
 MIN_ELO = 1800  # both players
