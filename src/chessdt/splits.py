@@ -89,6 +89,17 @@ def expand_to_positions(
     return np.repeat(game_labels, lengths)
 
 
+def leaked_mask(keys: np.ndarray, train_keys: np.ndarray) -> np.ndarray:
+    """Which of `keys` also occur in training.
+
+    The one primitive both the held-out splits and the puzzle set go through,
+    so there is a single definition of what counts as a leak.
+    """
+    if not len(keys) or not len(train_keys):
+        return np.zeros(len(keys), dtype=bool)
+    return np.isin(keys, train_keys)
+
+
 def drop_leaked(labels: np.ndarray, keys: np.ndarray) -> int:
     """Mark held-out positions that also occur in training as DROPPED.
 
@@ -99,7 +110,7 @@ def drop_leaked(labels: np.ndarray, keys: np.ndarray) -> int:
     if not len(held) or not len(train_keys):
         return 0
 
-    leaked = held[np.isin(keys[held], train_keys)]
+    leaked = held[leaked_mask(keys[held], train_keys)]
     labels[leaked] = DROPPED
     return len(leaked)
 
