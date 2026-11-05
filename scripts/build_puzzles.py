@@ -27,6 +27,7 @@ import io
 import sys
 import time
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -56,24 +57,57 @@ def open_puzzles(url: str) -> tuple[csv.DictReader, CountingReader]:
     return rows, counter
 
 
-def read_puzzles(url: str, limit: int | None) -> tuple[list, int, CountingReader]:
-    """Parse puzzles until the limit, returning them and how many were rejected."""
+@dataclass
+class Collected:
+    """Parsed puzzles in their stored form.
+
+    Boards are packed to their 36 bytes as each row is read rather than kept
+    as python-chess objects. A Board is on the order of a kilobyte live, so
+    holding six million of them costs several gigabytes and swaps the machine;
+    packing on the way past costs about 550 MB for the whole database.
+    """
+
+    packed: bytearray = field(default_factory=bytearray)
+    solution: list[int] = field(default_factory=list)
+    puzzle_id: list[str] = field(default_factory=list)
+    rating: list[int] = field(default_factory=list)
+    themes: list[str] = field(default_factory=list)
+    line_plies: list[int] = field(default_factory=list)
+    rejected: int = 0
+
+    def __len__(self) -> int:
+        return len(self.solution)
+
+    def add(self, puzzle) -> None:
+        self.packed += pack_board(puzzle.board)
+        self.solution.append(puzzle.solution_index)
+        self.puzzle_id.append(puzzle.puzzle_id)
+        self.rating.append(puzzle.rating)
+        self.themes.append(puzzle.themes)
+        self.line_plies.append(puzzle.line_plies)
+
+    def positions(self) -> np.ndarray:
+        return np.frombuffer(bytes(self.packed), dtype=np.uint8).reshape(-1, BOARD_RECORD_BYTES)
+
+
+def read_puzzles(url: str, limit: int | None) -> tuple[Collected, CountingReader]:
+    """Parse puzzles until the limit, packing each board as it is read."""
     rows, counter = open_puzzles(url)
-    puzzles, rejected = [], 0
+    collected = Collected()
 
     for row in rows:
         puzzle = parse_puzzle(row)
         if puzzle is None:
-            rejected += 1
+            collected.rejected += 1
             continue
-        puzzles.append(puzzle)
+        collected.add(puzzle)
 
-        if len(puzzles) % 250_000 == 0:
-            print(f"  {len(puzzles):,} parsed", flush=True)
-        if limit and len(puzzles) >= limit:
+        if len(collected) % 500_000 == 0:
+            print(f"  {len(collected):,} parsed", flush=True)
+        if limit and len(collected) >= limit:
             break
 
-    return puzzles, rejected, counter
+    return collected, counter
 
 
 def train_keys_of(corpus: Path) -> np.ndarray:
@@ -90,44 +124,48 @@ def train_keys_of(corpus: Path) -> np.ndarray:
     return position_keys(positions)[labels == TRAIN]
 
 
-def write(out: Path, puzzles: list, keep: np.ndarray, deduped: bool) -> None:
+def write(out: Path, collected: Collected, keep: np.ndarray, deduped: bool) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    kept = [p for p, k in zip(puzzles, keep, strict=True) if k]
 
-    with (out / "positions.bin").open("wb") as handle:
-        handle.write(b"".join(pack_board(p.board) for p in kept))
-    with (out / "moves.bin").open("wb") as handle:
-        handle.write(np.asarray([p.solution_index for p in kept], dtype=np.uint16).tobytes())
+    (out / "positions.bin").write_bytes(collected.positions()[keep].tobytes())
+    (out / "moves.bin").write_bytes(np.asarray(collected.solution, dtype=np.uint16)[keep].tobytes())
 
-    np.savez(
+    # Compressed: the themes column is fixed-width and about 70% null padding,
+    # which costs 750 MB uncompressed and almost nothing zipped. Metadata is
+    # read once, so decompression cost does not matter.
+    np.savez_compressed(
         out / "puzzles.npz",
-        puzzle_id=np.asarray([p.puzzle_id for p in kept], dtype="S8"),
-        rating=np.asarray([p.rating for p in kept], dtype=np.int16),
-        themes=np.asarray([p.themes[:THEME_BYTES] for p in kept], dtype=f"S{THEME_BYTES}"),
-        line_plies=np.asarray([p.line_plies for p in kept], dtype=np.int8),
+        puzzle_id=np.asarray(collected.puzzle_id, dtype="S8")[keep],
+        rating=np.asarray(collected.rating, dtype=np.int16)[keep],
+        themes=np.asarray([t[:THEME_BYTES] for t in collected.themes], dtype=f"S{THEME_BYTES}")[
+            keep
+        ],
+        line_plies=np.asarray(collected.line_plies, dtype=np.int8)[keep],
         deduped=np.bool_(deduped),
     )
 
 
-def report(puzzles, rejected, leaked, counter, elapsed, deduped) -> None:
-    kept = len(puzzles) - leaked
+def report(collected: Collected, leaked: int, counter, elapsed: float, deduped: bool) -> None:
+    total = len(collected)
+    kept = total - leaked
+
     print(
-        f"\nParsed {len(puzzles):,} puzzles in {elapsed / 60:.1f} min "
+        f"\nParsed {total:,} puzzles in {elapsed / 60:.1f} min "
         f"({counter.bytes_read / 1024**2:.0f} MB streamed)"
     )
-    print(f"  rejected as malformed  {rejected:>12,}")
+    print(f"  rejected as malformed  {collected.rejected:>12,}")
 
     if deduped:
-        share = leaked / len(puzzles) * 100 if puzzles else 0.0
+        share = leaked / total * 100 if total else 0.0
         print(f"  dropped, seen in train {leaked:>12,}  ({share:.2f}%)")
     else:
         print("  dropped, seen in train           skipped")
     print(f"  kept                   {kept:>12,}")
 
-    if puzzles:
-        ratings = np.asarray([p.rating for p in puzzles])
+    if total:
+        ratings = np.asarray(collected.rating)
         print(f"\n  rating range {ratings.min()}-{ratings.max()}, median {int(np.median(ratings))}")
-        mate_in_one = sum(1 for p in puzzles if "mateIn1" in p.themes)
+        mate_in_one = sum(1 for t in collected.themes if "mateIn1" in t)
         print(f"  mate-in-one puzzles {mate_in_one:,}")
 
     if not deduped:
@@ -150,27 +188,20 @@ def main() -> None:
 
     started = time.monotonic()
     print(f"Streaming {args.url}")
-    puzzles, rejected, counter = read_puzzles(args.url, args.limit)
-    if not puzzles:
+    collected, counter = read_puzzles(args.url, args.limit)
+    if not len(collected):
         raise SystemExit("no puzzles parsed; check the URL and the CSV columns")
 
     leaked = 0
-    keep = np.ones(len(puzzles), dtype=bool)
+    keep = np.ones(len(collected), dtype=bool)
     if not args.skip_dedupe:
         print(f"Hashing the training corpus at {args.corpus} ...", flush=True)
         train = train_keys_of(args.corpus)
-        keys = position_keys(
-            np.frombuffer(b"".join(pack_board(p.board) for p in puzzles), dtype=np.uint8).reshape(
-                -1, BOARD_RECORD_BYTES
-            )
-        )
-        keep = ~leaked_mask(keys, train)
+        keep = ~leaked_mask(position_keys(collected.positions()), train)
         leaked = int((~keep).sum())
 
-    write(args.out, puzzles, keep, deduped=not args.skip_dedupe)
-    report(
-        puzzles, rejected, leaked, counter, time.monotonic() - started, deduped=not args.skip_dedupe
-    )
+    write(args.out, collected, keep, deduped=not args.skip_dedupe)
+    report(collected, leaked, counter, time.monotonic() - started, deduped=not args.skip_dedupe)
     print(f"\nWrote {args.out}/")
 
 
