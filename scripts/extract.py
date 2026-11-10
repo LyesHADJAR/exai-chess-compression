@@ -122,7 +122,10 @@ def extract(url: str, out_dir: Path, target_games: int, report_every: int) -> No
                 skipped += 1
                 continue
             if game is None:
-                print("\nReached the end of the dump before hitting the target.")
+                print(
+                    f"\nThe dump ended after {counter.bytes_read:,} of {counter.total:,} bytes, "
+                    "before the target was reached. The corpus is incomplete."
+                )
                 break
 
             if not classify(game.headers, tally):
@@ -169,6 +172,7 @@ def summarise(corpus, tally, counter, skipped, elapsed: float) -> None:
     print(f"  skipped (malformed) {skipped:>14,}")
     print(f"  mean plies per game {positions / max(len(corpus.ids), 1):>14.1f}")
     print(f"  streamed            {counter.bytes_read / 1024**3:>13.2f} GB")
+    print(f"  connection resumed  {counter.reconnects:>14,} times")
     print(f"  encoded on disk     {size_gb:>13.2f} GB")
     print(f"  throughput          {positions / max(elapsed, 1e-9):>13,.0f} positions/s")
     print(f"\nOutput in {corpus.out_dir}/ — next step is the split pass.")

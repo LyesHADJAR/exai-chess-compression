@@ -26,7 +26,6 @@ import csv
 import io
 import sys
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,17 +35,16 @@ import zstandard
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.encoding import BOARD_RECORD_BYTES, pack_board  # noqa: E402
-from chessdt.lichess import CountingReader  # noqa: E402
+from chessdt.lichess import ResumableStream  # noqa: E402
 from chessdt.puzzles import REQUIRED_COLUMNS, THEME_BYTES, parse_puzzle  # noqa: E402
 from chessdt.splits import TRAIN, leaked_mask, position_keys  # noqa: E402
 
 PUZZLE_URL = "https://database.lichess.org/lichess_db_puzzle.csv.zst"
 
 
-def open_puzzles(url: str) -> tuple[csv.DictReader, CountingReader]:
+def open_puzzles(url: str) -> tuple[csv.DictReader, ResumableStream]:
     """Open the remote puzzle CSV as rows, without touching disk."""
-    response = urllib.request.urlopen(url)  # noqa: S310 - fixed https URL
-    counter = CountingReader(response)
+    counter = ResumableStream(url)
     reader = zstandard.ZstdDecompressor().stream_reader(counter)
     handle = io.TextIOWrapper(reader, encoding="utf-8", errors="replace")
 
@@ -90,7 +88,7 @@ class Collected:
         return np.frombuffer(bytes(self.packed), dtype=np.uint8).reshape(-1, BOARD_RECORD_BYTES)
 
 
-def read_puzzles(url: str, limit: int | None) -> tuple[Collected, CountingReader]:
+def read_puzzles(url: str, limit: int | None) -> tuple[Collected, ResumableStream]:
     """Parse puzzles until the limit, packing each board as it is read."""
     rows, counter = open_puzzles(url)
     collected = Collected()

@@ -34,10 +34,10 @@ from chessdt.constants import (  # noqa: E402
     MIN_PLIES,
     TARGET_GAMES,
 )
-from chessdt.lichess import CountingReader, Tally, classify, open_dump  # noqa: E402
+from chessdt.lichess import ResumableStream, Tally, classify, open_dump  # noqa: E402
 
 
-def report(tally: Tally, counter: CountingReader, elapsed: float) -> None:
+def report(tally: Tally, counter: ResumableStream, elapsed: float) -> None:
     mb = counter.bytes_read / 1024 / 1024
     rate = tally.scanned / elapsed if elapsed else 0.0
 

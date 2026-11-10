@@ -6,7 +6,9 @@ writes to disk: the stream is decompressed in memory and abandoned once enough
 games have been read.
 """
 
+import http.client
 import io
+import time
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -91,32 +93,93 @@ def classify(headers, tally: Tally) -> bool:
     return True
 
 
-class CountingReader(io.RawIOBase):
-    """Wraps a byte stream and records how many compressed bytes were pulled."""
+class ResumableStream(io.RawIOBase):
+    """An HTTP download that survives dropped connections.
 
-    def __init__(self, stream):
-        self._stream = stream
+    A multi-gigabyte stream over a long-lived connection will be cut sooner or
+    later, and a cut connection reads exactly like the end of the file. Taken
+    at face value that truncates the corpus silently, which is how a run once
+    stopped at 161,062 games of 300,000 and reported success.
+
+    So the stream knows how long the file is. If the data stops before that,
+    it reconnects and asks for the file from the byte it had reached. The
+    consumer sees one unbroken sequence of bytes, so a decompressor reading
+    from this never learns anything happened.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        opener=urllib.request.urlopen,
+        retries: int = 10,
+        timeout: float = 60.0,
+        pause=time.sleep,
+    ):
+        self.url = url
         self.bytes_read = 0
+        self.total: int | None = None
+        self.reconnects = 0
+        self._opener, self._retries, self._timeout, self._pause = opener, retries, timeout, pause
+        self._response = None
+        self._connect()
+
+    def _connect(self) -> None:
+        headers = {"Range": f"bytes={self.bytes_read}-"} if self.bytes_read else {}
+        request = urllib.request.Request(self.url, headers=headers)  # noqa: S310 - fixed https URL
+        response = self._opener(request, timeout=self._timeout)
+
+        if self.bytes_read and getattr(response, "status", 206) != 206:
+            raise OSError("server ignored the Range header; cannot resume the download")
+        if self.total is None:
+            length = response.headers.get("Content-Length")
+            self.total = int(length) if length else None
+        self._response = response
+
+    def _finished(self) -> bool:
+        return self.total is None or self.bytes_read >= self.total
 
     def readable(self) -> bool:
         return True
 
     def readinto(self, buffer) -> int:
-        chunk = self._stream.read(len(buffer))
-        if not chunk:
-            return 0
-        buffer[: len(chunk)] = chunk
-        self.bytes_read += len(chunk)
-        return len(chunk)
+        failures = 0
+        while True:
+            try:
+                chunk = self._response.read(len(buffer))
+            except (OSError, http.client.HTTPException):
+                chunk = b""
+
+            if chunk:
+                buffer[: len(chunk)] = chunk
+                self.bytes_read += len(chunk)
+                return len(chunk)
+            if self._finished():
+                return 0
+
+            # The data stopped short of the file's length: the connection was
+            # cut. Back off, then pick up from the byte we had reached.
+            while True:
+                failures += 1
+                if failures > self._retries:
+                    raise OSError(
+                        f"download of {self.url} kept failing at byte {self.bytes_read:,} "
+                        f"of {self.total:,}"
+                    )
+                self._pause(min(2.0**failures, 60.0))
+                try:
+                    self._connect()
+                    self.reconnects += 1
+                    break
+                except (OSError, http.client.HTTPException):
+                    continue
 
 
-def open_dump(url: str) -> tuple[io.TextIOBase, CountingReader]:
+def open_dump(url: str) -> tuple[io.TextIOBase, ResumableStream]:
     """Open a remote .pgn.zst as decompressed text, without touching disk.
 
-    Returns the text handle and the counter, so callers can report how many
-    compressed bytes a run actually cost.
+    Returns the text handle and the stream, so callers can report how many
+    compressed bytes a run cost and whether the connection had to be resumed.
     """
-    response = urllib.request.urlopen(url)  # noqa: S310 - fixed https URL
-    counter = CountingReader(response)
-    reader = zstandard.ZstdDecompressor().stream_reader(counter)
-    return io.TextIOWrapper(reader, encoding="utf-8", errors="replace"), counter
+    stream = ResumableStream(url)
+    reader = zstandard.ZstdDecompressor().stream_reader(stream)
+    return io.TextIOWrapper(reader, encoding="utf-8", errors="replace"), stream
