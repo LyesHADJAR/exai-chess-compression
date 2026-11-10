@@ -21,6 +21,18 @@ def autocast(device: str):
     return torch.autocast("cpu", enabled=False)
 
 
+def topk_hits(logits: torch.Tensor, target: torch.Tensor, k: int) -> torch.Tensor:
+    """Per row, whether the target is among the k highest-scoring moves.
+
+    Top-1 asks whether the model's first choice is the move that was played.
+    Top-3 asks whether the played move is one of its three favourites, which
+    is the fairer measure of behaviour cloning: in most positions a human
+    chooses between a few reasonable moves, and a model that ranks the played
+    one second has still understood the position.
+    """
+    return (logits.topk(k, dim=-1).indices == target.unsqueeze(-1)).any(dim=-1)
+
+
 @torch.no_grad()
 def predict(model, batch: Batch, device: str) -> torch.Tensor:
     """Logits for every ply of a batch, as float32."""
@@ -38,13 +50,13 @@ def score(
     batch_size: int = 512,
     mutate=None,
 ) -> dict:
-    """Loss and top-1 accuracy over the positions of `split` inside the windows.
+    """Loss, top-1 and top-3 accuracy over the positions of `split` in the windows.
 
     `mutate` optionally rewrites each batch before the forward pass; the
     ablations are built on it.
     """
     model.eval()
-    loss_sum, hits, count = 0.0, 0, 0
+    loss_sum, hits, hits3, count = 0.0, 0, 0, 0
 
     for i in range(0, len(starts), batch_size):
         batch = corpus.window(starts[i : i + batch_size], plies)
@@ -55,12 +67,14 @@ def score(
         logits = predict(model, batch, corpus.device)[keep]
         target = batch.moves[keep]
         loss_sum += F.cross_entropy(logits, target, reduction="sum").item()
-        hits += (logits.argmax(-1) == target).sum().item()
+        hits += topk_hits(logits, target, 1).sum().item()
+        hits3 += topk_hits(logits, target, 3).sum().item()
         count += int(keep.sum())
 
     return {
         "loss": loss_sum / max(count, 1),
         "top1": hits / max(count, 1),
+        "top3": hits3 / max(count, 1),
         "positions": count,
     }
 

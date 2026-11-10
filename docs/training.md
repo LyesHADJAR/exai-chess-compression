@@ -101,6 +101,10 @@ never goes into git.
 - **Validation top-1** is the headline. Strong human-move predictors reach the
   low-to-mid 50s with far more capacity and data; this model is deliberately
   small, so expect less. What matters is the gap to the linear probe.
+- **Validation top-3** says how well the behaviour is cloned. A human in most
+  positions chooses between a few reasonable moves, so the played move being
+  among the model's three favourites is the fairer test of whether it has
+  understood the position. It is reported everywhere top-1 is.
 - **The ablation table is the release gate.** Emptying the board must change
   most predictions. If `outcome`, `rating` or `history` come back as inert,
   the model still works, but the write-up may not describe it as conditioned

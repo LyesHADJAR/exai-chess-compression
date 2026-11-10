@@ -232,10 +232,18 @@ def main() -> None:
             model.train()
             improved = result["top1"] > best
             best = max(best, result["top1"])
-            log(run, {"step": step, "val_loss": result["loss"], "val_top1": result["top1"]})
+            log(
+                run,
+                {
+                    "step": step,
+                    "val_loss": result["loss"],
+                    "val_top1": result["top1"],
+                    "val_top3": result["top3"],
+                },
+            )
             print(
                 f"          val loss {result['loss']:.4f}  val top1 {result['top1']:.4f}"
-                + ("  (best so far)" if improved else ""),
+                f"  top3 {result['top3']:.4f}" + ("  (best so far)" if improved else ""),
                 flush=True,
             )
             save_checkpoint(run / "model_last.pt", model, step=step, val_top1=result["top1"])
@@ -263,8 +271,10 @@ def main() -> None:
     print(f"\n  best checkpoint   step {results['best_step']:,} of {step:,}")
     for name in ("val", "test"):
         r = results[name]
-        print(f"  {name:<5} top-1 {r['top1'] * 100:6.2f}%   loss {r['loss']:.4f}   "
-              f"({r['positions']:,} positions)")  # fmt: skip
+        print(
+            f"  {name:<5} top-1 {r['top1'] * 100:6.2f}%   top-3 {r['top3'] * 100:6.2f}%   "
+            f"loss {r['loss']:.4f}   ({r['positions']:,} positions)"
+        )
     print(f"\nResults in {run / 'results.json'}")
 
 

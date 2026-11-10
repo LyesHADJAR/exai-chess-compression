@@ -39,7 +39,7 @@ from chessdt.constants import (  # noqa: E402
 )
 from chessdt.data import Batch, Corpus, decode_records  # noqa: E402
 from chessdt.encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, unpack_board  # noqa: E402
-from chessdt.evaluate import alone, compare, predict, score  # noqa: E402
+from chessdt.evaluate import alone, compare, predict, score, topk_hits  # noqa: E402
 from chessdt.model import load_checkpoint  # noqa: E402
 from chessdt.splits import TEST, VAL  # noqa: E402
 
@@ -97,6 +97,7 @@ def score_puzzles(model, directory: Path, sample: int, device: str, seed: int = 
     cond = torch.tensor([PUZZLE_OUTCOME, rating(PUZZLE_ELO)], device=device)
     raw_hits = torch.zeros(sample, dtype=torch.bool, device=device)
     legal_hits = torch.zeros(sample, dtype=torch.bool, device=device)
+    legal_hits3 = torch.zeros(sample, dtype=torch.bool, device=device)
 
     for i in range(0, sample, 1024):
         codes, side = decode_records(torch.from_numpy(chosen[i : i + 1024]).to(device))
@@ -112,7 +113,8 @@ def score_puzzles(model, directory: Path, sample: int, device: str, seed: int = 
         logits = predict(model, batch, device)[:, 0]
         raw_hits[i : i + n] = logits.argmax(-1) == target[i : i + n]
         masked = logits.masked_fill(~legal[i : i + n], float("-inf"))
-        legal_hits[i : i + n] = masked.argmax(-1) == target[i : i + n]
+        legal_hits[i : i + n] = topk_hits(masked, target[i : i + n], 1)
+        legal_hits3[i : i + n] = topk_hits(masked, target[i : i + n], 3)
 
     solved = legal_hits.cpu().numpy()
     picked_ratings = ratings[pick]
@@ -130,6 +132,7 @@ def score_puzzles(model, directory: Path, sample: int, device: str, seed: int = 
     return {
         "puzzles": sample,
         "solved": float(solved.mean()),
+        "solution_in_top3": float(legal_hits3.float().mean().item()),
         "solved_without_legal_mask": float(raw_hits.float().mean().item()),
         "mate_in_one": float(solved[mate_in_one].mean()),
         "mate_in_one_puzzles": int(mate_in_one.sum()),
@@ -155,15 +158,19 @@ def main() -> None:
     report = {"checkpoint": str(args.checkpoint), "step": payload.get("step")}
 
     print(f"\nCheckpoint {args.checkpoint} (step {payload.get('step')})\n")
-    print("ACCURACY — first choice equals the move played")
+    print("ACCURACY — the move played is the first choice (top-1) or among three (top-3)")
     for name, split in (("val", VAL), ("test", TEST)):
         starts = corpus.split_starts(int(split), plies, limit=args.windows)
         report[name] = score(model, corpus, starts, plies, int(split))
         report[f"{name}_no_history"] = score(model, corpus, starts, plies, int(split), mutate=alone)
         r, bare = report[name], report[f"{name}_no_history"]
         print(
-            f"  {name:<5} {r['top1'] * 100:6.2f}%   without history {bare['top1'] * 100:6.2f}%"
+            f"  {name:<5} top-1 {r['top1'] * 100:6.2f}%   top-3 {r['top3'] * 100:6.2f}%"
             f"   ({r['positions']:,} positions)"
+        )
+        print(
+            f"        top-1 {bare['top1'] * 100:6.2f}%   top-3 {bare['top3'] * 100:6.2f}%"
+            f"   without history"
         )
 
     print("\nABLATIONS — share of predictions that change when one input is damaged")
@@ -188,6 +195,7 @@ def main() -> None:
         print(f"\nPUZZLES — {args.puzzle_sample:,} sampled, illegal moves masked")
         report["puzzle_set"] = p = score_puzzles(model, args.puzzles, args.puzzle_sample, device)
         print(f"  solved        {p['solved'] * 100:6.2f}%")
+        print(f"  in top three  {p['solution_in_top3'] * 100:6.2f}%")
         print(f"  mate in one   {p['mate_in_one'] * 100:6.2f}%   ({p['mate_in_one_puzzles']:,})")
         for band, r in p["by_rating"].items():
             print(f"  rated {band:<10} {r['solved'] * 100:6.2f}%   ({r['puzzles']:,})")
