@@ -105,13 +105,17 @@ class ResumableStream(io.RawIOBase):
     it reconnects and asks for the file from the byte it had reached. The
     consumer sees one unbroken sequence of bytes, so a decompressor reading
     from this never learns anything happened.
+
+    It is patient by default: forty consecutive failed attempts, backing off
+    to a minute apart, rides out an outage of over half an hour before giving
+    up. Any successful read resets the count.
     """
 
     def __init__(
         self,
         url: str,
         opener=urllib.request.urlopen,
-        retries: int = 10,
+        retries: int = 40,
         timeout: float = 60.0,
         pause=time.sleep,
     ):
