@@ -12,7 +12,7 @@ import random
 import pytest
 import zstandard
 
-from chessdt.lichess import ResumableStream
+from chessdt.lichess import LocalStream, RangeNotSupported, ResumableStream, fetch_head
 
 PAYLOAD = bytes(range(256)) * 400  # 102,400 distinct-ish bytes
 
@@ -23,9 +23,13 @@ class FakeServer:
     def __init__(self, cut: int | None, fail_with=None, refuse_first: int = 0, ranges: bool = True):
         self.cut, self.fail_with, self.ranges = cut, fail_with, ranges
         self.refuse = refuse_first
+        self.refuse_initial = 0
         self.requested: list[str | None] = []
 
     def __call__(self, request, timeout=None):
+        if self.refuse_initial:
+            self.refuse_initial -= 1
+            raise ConnectionResetError("connection reset by peer")
         if self.refuse and self.requested:
             self.refuse -= 1
             raise OSError("connection refused")
@@ -102,8 +106,38 @@ def test_it_gives_up_loudly_rather_than_returning_a_short_file():
 def test_a_server_that_ignores_range_is_not_trusted():
     """Restarting from zero while believing we resumed would corrupt the stream."""
     s = stream(FakeServer(cut=50_000, ranges=False), retries=2)
-    with pytest.raises(OSError):
+    with pytest.raises(RangeNotSupported):
         s.read()
+
+
+def test_the_very_first_connection_is_retried_too():
+    """The handshake itself can be reset before a single byte arrives."""
+    server = FakeServer(cut=None)
+    server.refuse_initial = 3
+    assert stream(server).read() == PAYLOAD
+
+
+def test_a_first_connection_that_never_succeeds_gives_up_loudly():
+    server = FakeServer(cut=None)
+    server.refuse_initial = 99
+    with pytest.raises(OSError, match="kept failing at byte 0"):
+        stream(server, retries=3)
+
+
+def test_a_file_on_disk_reads_like_a_download(tmp_path):
+    path = tmp_path / "head.bin"
+    path.write_bytes(PAYLOAD)
+    local = LocalStream(path)
+    assert local.read() == PAYLOAD
+    assert (local.bytes_read, local.total, local.reconnects) == (len(PAYLOAD), len(PAYLOAD), 0)
+
+
+def test_fetch_head_keeps_a_file_that_is_already_complete(tmp_path):
+    path = tmp_path / "head.bin"
+    path.write_bytes(PAYLOAD)
+    said = []
+    assert fetch_head("https://example.test/unreachable", path, 1000, report=said.append) == 0
+    assert "already" in said[0]
 
 
 def test_a_decompressor_reading_across_a_cut_sees_nothing_unusual():

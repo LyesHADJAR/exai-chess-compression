@@ -32,7 +32,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.constants import DUMP_URL, MIN_PLIES, TARGET_GAMES  # noqa: E402
 from chessdt.encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, pack_board  # noqa: E402
-from chessdt.lichess import RESULTS, Tally, classify, game_id, open_dump, parse_elo  # noqa: E402
+from chessdt.lichess import (  # noqa: E402
+    RESULTS,
+    Tally,
+    classify,
+    fetch_head,
+    game_id,
+    open_dump,
+    parse_elo,
+)
 
 
 class Corpus:
@@ -107,8 +115,9 @@ class Corpus:
         )
 
 
-def extract(url: str, out_dir: Path, target_games: int, report_every: int) -> None:
-    handle, counter = open_dump(url)
+def extract(source, out_dir: Path, target_games: int, report_every: int, resumed: int = 0) -> None:
+    handle, counter = open_dump(source)
+    counter.reconnects += resumed
     corpus = Corpus(out_dir)
     tally = Tally()
     skipped = 0
@@ -160,6 +169,9 @@ def extract(url: str, out_dir: Path, target_games: int, report_every: int) -> No
         handle.close()
 
     summarise(corpus, tally, counter, skipped, time.monotonic() - started)
+    if len(corpus.ids) < target_games:
+        # A short corpus must not look like success to whatever runs next.
+        raise SystemExit(f"\nIncomplete: {len(corpus.ids):,} of {target_games:,} games.")
 
 
 def summarise(corpus, tally, counter, skipped, elapsed: float) -> None:
@@ -184,11 +196,24 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("data/encoded"))
     ap.add_argument("--games", type=int, default=TARGET_GAMES)
     ap.add_argument("--report-every", type=int, default=10_000)
+    ap.add_argument(
+        "--prefetch-gb",
+        type=float,
+        default=0.0,
+        help="download this much of the dump to disk first, then parse it offline; "
+        "for networks that drop long-lived connections (0.75 covers 300,000 games)",
+    )
     args = ap.parse_args()
 
-    print(f"Streaming {args.url}")
+    source, resumed = args.url, 0
+    if args.prefetch_gb > 0:
+        source = args.out.parent / "dump_head.pgn.zst"
+        print(f"Fetching the first {args.prefetch_gb:g} GB of {args.url}")
+        resumed = fetch_head(args.url, source, int(args.prefetch_gb * 1024**3))
+    else:
+        print(f"Streaming {args.url}")
     print(f"Target {args.games:,} games into {args.out}/\n")
-    extract(args.url, args.out, args.games, args.report_every)
+    extract(source, args.out, args.games, args.report_every, resumed)
 
 
 if __name__ == "__main__":
