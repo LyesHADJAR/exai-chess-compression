@@ -33,3 +33,10 @@ checkpoints/
 
 # Notebooks
 .ipynb_checkpoints/
+
+# Dependencies installed beside the project with pip --target
+.deps/
+
+# Training runs
+runs/
+*.log
