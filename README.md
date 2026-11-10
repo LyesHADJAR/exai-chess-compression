@@ -15,10 +15,11 @@ current position.
 
 | | |
 |---|---|
-| Input | FEN flattened to 77 tokens, one position per ply |
+| Input | 64 square tokens per position, pooled to one vector per ply |
+| Conditioning | outcome-to-go and rating of the player to move |
 | Output | softmax over 1,968 UCI moves, illegal moves masked |
 | Context | 16 plies |
-| Parameters | about 11.3M |
+| Parameters | 11,284,656 |
 | Released artifact | about 43 MB, fp32 |
 | Training data | Lichess, human games, behavioural cloning |
 
@@ -29,15 +30,16 @@ to compress, which makes for a challenge nobody can win on skill.
 
 | Path | Holds |
 |---|---|
-| `src/chessdt/` | the library: encoding, model, data, checkpoints |
-| `scripts/` | entry points — collection, training, and the three gates |
+| `src/chessdt/` | the library: encoding, data, model, evaluation |
+| `scripts/` | entry points — collection, training, evaluation, and the gates |
 | `tests/` | correctness tests, including the readout-leak guard |
-| `docs/` | data locations and design notes |
+| `docs/` | where the data lives, and how to train |
 
 ## Status
 
-Design is settled; implementation has not started. The open blocker is GPU
-access for training the reference model.
+The data pipeline and the corpus are done: 300,000 games, 22.7M positions,
+split and deduplicated. The model, the training loop and the evaluation are
+written and tested. The reference model has not been trained yet.
 
 ## Getting started
 
@@ -47,7 +49,8 @@ pytest -q
 ```
 
 Data is not in this repository and never will be. See [docs/data.md](docs/data.md)
-for where it lives and how to regenerate it.
+for where it lives and how to regenerate it, and [docs/training.md](docs/training.md)
+for training and evaluating the reference model.
 
 ## Validation gates
 
@@ -55,11 +58,12 @@ Three checks run in order, each before the step it protects. They exist because
 the previous iteration of this project shipped a model that had learned to copy
 its own input, and nobody checked until late.
 
-1. **Linear probe** — a ridge regression from the encoded position to the move
-   must fail badly. If a linear model can do the task, the task is not worth
-   compressing.
-2. **Input ablation** — zeroing the board must destroy the prediction. Any
-   channel that can be zeroed without effect is a dead channel.
+1. **Linear probe** (`scripts/probe_linear.py`) — a single linear layer from
+   the one-hot board to the move must fall far short of the model. If a linear
+   model can do the task, the task is not worth compressing.
+2. **Input ablation** (`scripts/evaluate.py`) — emptying the board must change
+   most predictions. Any channel that can be damaged without effect is a dead
+   channel, and may not be claimed in the write-up.
 3. **Separation check** — standard compression methods must land at visibly
    different fidelities, reported per parameter group. If everything ties, the
    scoring cannot rank anyone.
