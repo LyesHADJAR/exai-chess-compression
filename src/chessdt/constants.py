@@ -30,6 +30,26 @@ DUMP_SIZE_GB = 29.2
 DUMP_URL = f"https://database.lichess.org/standard/lichess_db_standard_rated_{DUMP_MONTH}.pgn.zst"
 
 
+#: What a square can hold as the model sees it. The twelve pieces and the
+#: empty square, plus three codes that fold the rest of the position into the
+#: board itself: an empty square that is the en passant target, and a rook
+#: that still carries its castling right, one code per colour.
+SQUARE_CODES = 16
+EN_PASSANT_CODE = 13
+CASTLING_ROOK_CODES = (14, 15)  # white, black
+
+#: Conditioning channels on the return token: outcome-to-go for the player to
+#: move, and that player's rating. Kept separate so each can be ablated alone.
+CONDITION_DIM = 2
+ELO_CENTRE = 2000.0
+ELO_SCALE = 400.0
+
+#: How a puzzle is conditioned. It has no game around it, so the convention is
+#: fixed: the solver is winning and is a strong player.
+PUZZLE_OUTCOME = 1.0
+PUZZLE_ELO = 2400.0
+
+
 # ── Collection filters ────────────────────────────────────────────────────
 
 MIN_ELO = 1800  # both players
@@ -78,8 +98,8 @@ class ModelConfig:
     def parameter_count(self) -> int:
         """Exact parameter count for this configuration.
 
-        Kept in sync with the model by `tests/test_budget.py`, which also
-        guards the released artifact size.
+        `tests/test_model.py` asserts the built model matches this to the
+        parameter, and `tests/test_budget.py` guards the artifact size.
         """
 
         def block(dim: int, ff: int) -> int:
@@ -91,26 +111,30 @@ class ModelConfig:
         encoder = self.enc_layers * block(self.enc_dim, self.enc_ff)
         backbone = self.layers * block(self.dim, self.ff)
 
-        piece_embed = 13 * self.enc_dim
+        square_code_embed = SQUARE_CODES * self.enc_dim
         square_embed = 64 * self.enc_dim
+        side_embed = 2 * self.enc_dim
+        encoder_norm = 2 * self.enc_dim
         projection = self.enc_dim * self.dim + self.dim
+        condition_embed = CONDITION_DIM * self.dim + self.dim
         move_embed = N_MOVES * self.dim
-        policy_head = self.dim * N_MOVES + N_MOVES
-        return_embed = self.dim + self.dim
-        timestep_embed = (self.context_plies + 1) * self.dim
+        ply_embed = self.context_plies * self.dim
         final_norm = 2 * self.dim
+        policy_head = self.dim * N_MOVES + N_MOVES
 
         return (
             encoder
             + backbone
-            + piece_embed
+            + square_code_embed
             + square_embed
+            + side_embed
+            + encoder_norm
             + projection
+            + condition_embed
             + move_embed
-            + policy_head
-            + return_embed
-            + timestep_embed
+            + ply_embed
             + final_norm
+            + policy_head
         )
 
     def artifact_bytes(self, bytes_per_param: int = 4) -> int:
