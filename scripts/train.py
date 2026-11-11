@@ -34,7 +34,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.constants import PRESETS, SIZE_CAP_BYTES  # noqa: E402
-from chessdt.data import Corpus  # noqa: E402
+from chessdt.data import Corpus, tactical_fraction_at  # noqa: E402
 from chessdt.evaluate import autocast, score  # noqa: E402
 from chessdt.model import ChessDT, load_checkpoint, save_checkpoint  # noqa: E402
 from chessdt.splits import TEST, VAL  # noqa: E402
@@ -114,6 +114,12 @@ def main() -> None:
         help="share of windows built around a mate-in-one position",
     )
     ap.add_argument(
+        "--tactical-anneal",
+        type=float,
+        default=0.0,
+        help="fade the tactical share to zero by this fraction of training (0 = never)",
+    )
+    ap.add_argument(
         "--micro",
         type=int,
         default=1,
@@ -151,8 +157,13 @@ def main() -> None:
     print(f"Corpus: {len(corpus):,} positions, {len(corpus.train_positions):,} for training")
     if args.tactical_fraction:
         found = corpus.load_tactics(args.tactics)
+        fade = (
+            f", fading to none by {args.tactical_anneal:.0%} of training"
+            if args.tactical_anneal
+            else ""
+        )
         print(f"Tactics: {found:,} training positions with a mate in one, "
-              f"{args.tactical_fraction:.0%} of windows built around one")  # fmt: skip
+              f"{args.tactical_fraction:.0%} of windows built around one{fade}")  # fmt: skip
 
     model = ChessDT(cfg).to(device)
     optimizer = build_optimizer(model, args.lr, args.weight_decay)
@@ -217,7 +228,10 @@ def main() -> None:
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(step, horizon, args.lr, args.warmup)
 
-        batch = corpus.sample_train(args.batch, plies, generator, args.tactical_fraction)
+        tactical = tactical_fraction_at(
+            step, total or 10**9, args.tactical_fraction, args.tactical_anneal
+        )
+        batch = corpus.sample_train(args.batch, plies, generator, tactical)
         wanted = int(batch.valid.sum())
         optimizer.zero_grad(set_to_none=True)
         loss_sum, hits, count = 0.0, 0, 0

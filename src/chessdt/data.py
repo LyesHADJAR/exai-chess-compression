@@ -70,6 +70,19 @@ def condition(outcome: torch.Tensor, elo: torch.Tensor) -> torch.Tensor:
     return torch.stack([outcome.float(), (elo.float() - ELO_CENTRE) / ELO_SCALE], dim=-1)
 
 
+def tactical_fraction_at(step: int, total: int, base: float, anneal: float = 0.0) -> float:
+    """The share of tactical windows at a given step.
+
+    Constant at `base` unless `anneal` is set, in which case it falls in a
+    straight line to zero by that fraction of the way through training and stays
+    there. Showing mates often teaches them; finishing on natural positions
+    stops the model from expecting a mate in every position it meets.
+    """
+    if anneal <= 0:
+        return base
+    return base * max(0.0, 1.0 - step / (anneal * total))
+
+
 @dataclass
 class Batch:
     codes: torch.Tensor  # (B, K, 64) long

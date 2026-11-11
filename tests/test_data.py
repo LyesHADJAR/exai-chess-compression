@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from chessdt.constants import CASTLING_ROOK_CODES, ELO_CENTRE, ELO_SCALE, EN_PASSANT_CODE
-from chessdt.data import Corpus, decode_records
+from chessdt.data import Corpus, decode_records, tactical_fraction_at
 from chessdt.encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, pack_board, piece_code
 from chessdt.splits import TEST, TRAIN
 
@@ -219,3 +219,26 @@ def test_without_a_fraction_sampling_is_unchanged(corpus):
     a = corpus.sample_train(6, 3, torch.Generator().manual_seed(3))
     b = corpus.sample_train(6, 3, torch.Generator().manual_seed(3), tactical_fraction=0.0)
     assert torch.equal(a.moves, b.moves)
+
+
+# ── The tactical schedule ─────────────────────────────────────────────────
+
+
+def test_without_annealing_the_fraction_is_constant():
+    assert [tactical_fraction_at(s, 100, 0.4) for s in (0, 50, 99)] == [0.4, 0.4, 0.4]
+
+
+def test_annealing_falls_in_a_straight_line_to_zero():
+    values = [tactical_fraction_at(s, 100, 0.5, anneal=0.8) for s in (0, 20, 40, 60, 80)]
+    assert values == pytest.approx([0.5, 0.375, 0.25, 0.125, 0.0])
+
+
+def test_annealing_stays_at_zero_afterwards_and_never_goes_negative():
+    assert tactical_fraction_at(95, 100, 0.5, anneal=0.8) == 0.0
+    assert tactical_fraction_at(10**6, 100, 0.5, anneal=0.8) == 0.0
+
+
+def test_a_window_with_no_tactical_share_needs_no_tactics_loaded(corpus):
+    # Once annealed to zero the sampler must not demand the tactical positions.
+    batch = corpus.sample_train(4, 3, torch.Generator().manual_seed(0), tactical_fraction=0.0)
+    assert batch.moves.shape == (4, 3)
