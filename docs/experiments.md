@@ -78,3 +78,18 @@ $PY scripts/compare_runs.py runs/arms/*/ --baseline runs/arms/baseline
 `fulldetail` prints its speed in the first minute of its log. If it runs at more
 than about 600 ms/step, stop it: the attention path is not fast on that machine
 and the arm will not finish in useful time.
+
+## The second round, on the larger corpus
+
+Once the first round has said which changes help, the arms that combine them
+run on the v2 corpus (about 1.7 million games, rated from 1000 up, so the
+rating channel has something to learn from).
+
+```bash
+bash scripts/build_v2_corpus.sh     # extracts four more months, merges, splits
+bash scripts/prepare_v2.sh          # mate scan and puzzles for that corpus
+DATA=data/v2 TACTICS=data/v2_tactics PUZZLES=data/puzzles_v2 bash scripts/run_wave.sh <group>
+```
+
+The held-out games of the reference corpus keep their places in the merged one,
+because a game's split depends only on its ID, so the two corpora can be compared.
