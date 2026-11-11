@@ -80,6 +80,7 @@ def main() -> None:
     ap.add_argument("--puzzle-sample", type=int, default=50_000)
     ap.add_argument("--windows", type=int, default=None, help="cap held-out windows per split")
     ap.add_argument("--ablation-windows", type=int, default=4000)
+    ap.add_argument("--output", default="evaluation.json", help="file name beside the checkpoint")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -146,14 +147,10 @@ def main() -> None:
             r = puzzles.solve(model, outcome=outcome, elo=elo)
             report["steering"][label] = r
             print(f"  {label:<26}{r['solved'] * 100:>8.2f}%{r['solution_in_top3'] * 100:>8.2f}%")
-        top, bottom = (
-            report["steering"]["winning, rated 2400"],
-            report["steering"]["losing, rated 1200"],
-        )
-        spread = (top["solved"] - bottom["solved"]) * 100
-        print(f"  strongest minus weakest: {spread:+.2f} points")
+        solved = [r["solved"] for r in report["steering"].values()]
+        print(f"  widest gap between any two: {(max(solved) - min(solved)) * 100:.2f} points")
 
-    out = args.checkpoint.parent / "evaluation.json"
+    out = args.checkpoint.parent / args.output
     out.write_text(json.dumps(report, indent=2))
     print(f"\nWrote {out}")
 

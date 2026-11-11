@@ -13,6 +13,7 @@ that task scored R-squared 0.998, which is why this one exists.
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--batch", type=int, default=4096)
     ap.add_argument("--eval-positions", type=int, default=200_000)
+    ap.add_argument("--output", type=Path, default=Path("runs/probe_linear.json"))
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -67,6 +69,17 @@ def main() -> None:
             hits += (probe(features(batch)).argmax(-1) == batch.moves[:, 0]).sum().item()
 
     top1 = hits / len(held_out)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(
+            {
+                "top1": top1,
+                "positions": len(held_out),
+                "training_positions": args.steps * args.batch,
+            },
+            indent=2,
+        )
+    )
     print(f"\nLinear probe top-1 on {len(held_out):,} held-out positions: {top1 * 100:.2f}%")
     print(f"Seen {args.steps * args.batch:,} training positions.")
     print("The transformer has to beat this by a wide margin to be worth compressing.")
