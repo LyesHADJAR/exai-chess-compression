@@ -9,29 +9,51 @@ rule() { printf -- '------------------------------------------------------------
 echo "status at $(date '+%H:%M')"
 rule
 echo "EXPERIMENTS (runs/arms)"
-if pgrep -f "scripts/run_wave.sh" > /dev/null; then echo "  the wave is RUNNING"; else echo "  the wave is not running"; fi
+wave_running=0
+if pgrep -f "scripts/run_wave.sh" > /dev/null; then
+  wave_running=1
+  echo "  the wave is RUNNING"
+else
+  echo "  the wave is not running"
+fi
 found=0
+unfinished=0
 for log in runs/arms/*.log; do
   [ -e "$log" ] || continue
   name=$(basename "$log" .log)
   dir=runs/arms/$name
   found=1
+  step=$(grep -E '^step' "$log" 2> /dev/null | tail -1 | awk '{print $2}')
   if [ -f "$dir/evaluation.json" ]; then
     state="DONE"
-  elif grep -qE "Traceback|Error" "$log" 2> /dev/null && [ ! -f "$dir/results.json" ]; then
-    state="FAILED  (look: tail -20 $log)"
-  elif [ -f "$dir/results.json" ]; then
-    state="training finished, now measuring"
   else
-    state=$(grep -E '^step' "$log" 2> /dev/null | tail -1 \
-      | awk '{printf "training: step %s of 8,000, %s pos/s, about %s min left", $2, $9, $11}')
-    [ -n "$state" ] || state="starting"
+    unfinished=$((unfinished + 1))
+    if grep -qE "Traceback|Error" "$log" 2> /dev/null && [ ! -f "$dir/results.json" ]; then
+      state="FAILED  (look: tail -20 $log)"
+    elif [ "$wave_running" = 0 ]; then
+      # A line saying "training" from a run that is no longer running is a lie.
+      if [ -f "$dir/results.json" ]; then state="STOPPED while measuring"
+      elif [ -n "$step" ]; then state="STOPPED at step $step (nothing is running it)"
+      else state="STOPPED before it began"; fi
+    elif [ -f "$dir/results.json" ]; then
+      state="training finished, now measuring"
+    elif [ -n "$step" ]; then
+      state=$(grep -E '^step' "$log" | tail -1 \
+        | awk '{printf "training: step %s of 8,000, %s pos/s, about %s min left", $2, $9, $11}')
+    else
+      state="starting"
+    fi
   fi
   printf '  %-16s %s\n' "$name" "$state"
 done
 [ "$found" = 1 ] || echo "  no experiments yet"
-if grep -q "^Rule: keep" wave_core.log 2> /dev/null; then
-  echo "  ALL FINISHED. Send me: tail -25 ~/exai-chess-compression/wave_core.log"
+latest=$(ls -t wave_*.log 2> /dev/null | head -n 1)
+if [ "$wave_running" = 0 ] && [ "$found" = 1 ]; then
+  if [ "$unfinished" = 0 ]; then
+    echo "  ALL FINISHED. Send me: tail -25 ~/exai-chess-compression/${latest:-wave_core.log}"
+  else
+    echo "  NOTHING IS RUNNING, but $unfinished experiment(s) did not finish. Start the wave again."
+  fi
 fi
 rule
 echo "BIGGER DATASET (v2 corpus)"
@@ -74,6 +96,7 @@ else
 fi
 rule
 echo "MACHINE"
+echo "  this server has been up since: $(ps -o lstart= -p 1 2> /dev/null | sed 's/^ *//')"
 df -h ~ 2> /dev/null | awk 'NR==2 {print "  free disk:   " $4}'
 # Inside a container, free(1) shows the whole host. The container's own limit
 # lives in the cgroup files.
