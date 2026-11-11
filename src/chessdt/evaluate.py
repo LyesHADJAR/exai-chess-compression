@@ -7,6 +7,7 @@ predicts every ply, and only positions carrying the split's own label count.
 Positions dropped as leaked still serve as history but are never scored.
 """
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,10 @@ import torch.nn.functional as F
 from .constants import ELO_CENTRE, ELO_SCALE, N_MOVES, PUZZLE_ELO, PUZZLE_OUTCOME
 from .data import Batch, Corpus, decode_records
 from .encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, unpack_board
+
+#: Windows scored per forward pass. Lower it (CHESSDT_EVAL_BATCH=64) on a GPU
+#: with little free memory: it changes the memory used, never the result.
+EVAL_BATCH = int(os.environ.get("CHESSDT_EVAL_BATCH", "512"))
 
 
 def autocast(device: str):
@@ -53,7 +58,7 @@ def score(
     starts: torch.Tensor,
     plies: int,
     split: int,
-    batch_size: int = 512,
+    batch_size: int = EVAL_BATCH,
     mutate=None,
 ) -> dict:
     """Loss, top-1 and top-3 accuracy over the positions of `split` in the windows.
@@ -93,7 +98,7 @@ def compare(
     plies: int,
     split: int,
     mutate,
-    batch_size: int = 512,
+    batch_size: int = EVAL_BATCH,
 ) -> dict:
     """How much an intervention on the inputs moves the predictions.
 
@@ -185,7 +190,11 @@ class PuzzleSet:
 
     @torch.no_grad()
     def solve(
-        self, model, outcome: float = PUZZLE_OUTCOME, elo: float = PUZZLE_ELO, chunk: int = 1024
+        self,
+        model,
+        outcome: float = PUZZLE_OUTCOME,
+        elo: float = PUZZLE_ELO,
+        chunk: int = 2 * EVAL_BATCH,
     ) -> dict:
         """Solve rates, given the conditioning the puzzle is posed under.
 

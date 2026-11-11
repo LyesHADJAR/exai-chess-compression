@@ -284,7 +284,12 @@ def main() -> None:
             print(
                 f"step {step:>7,}  loss {record['train_loss']:.4f}  "
                 f"top1 {record['train_top1']:.4f}  lr {record['lr']:.2e}  "
-                f"{rate:>7,.0f} pos/s  {remaining:>5.0f} min left",
+                f"{rate:>7,.0f} pos/s  {remaining:>5.0f} min left"
+                + (
+                    f"  peak {torch.cuda.max_memory_allocated() / 2**30:.1f} GiB"
+                    if device == "cuda"
+                    else ""
+                ),
                 flush=True,
             )
             seen_loss, seen_hits, seen_count = 0.0, 0, 0

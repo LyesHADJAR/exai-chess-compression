@@ -26,7 +26,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.data import Corpus  # noqa: E402
-from chessdt.evaluate import predict  # noqa: E402
+from chessdt.evaluate import EVAL_BATCH, predict  # noqa: E402
 from chessdt.model import load_checkpoint  # noqa: E402
 from chessdt.splits import TEST, VAL  # noqa: E402
 
@@ -34,11 +34,12 @@ from chessdt.splits import TEST, VAL  # noqa: E402
 def first_choices(model, corpus: Corpus, starts: torch.Tensor, ply: torch.Tensor, plies: int):
     """The model's first choice at one chosen ply of each window, in batches."""
     chosen = []
-    for i in range(0, len(starts), 256):
-        batch = corpus.window(starts[i : i + 256], plies)
+    size = max(1, EVAL_BATCH // 2)
+    for i in range(0, len(starts), size):
+        batch = corpus.window(starts[i : i + size], plies)
         logits = predict(model, batch, corpus.device)
         rows = torch.arange(len(logits), device=corpus.device)
-        chosen.append(logits[rows, ply[i : i + 256]].argmax(-1))
+        chosen.append(logits[rows, ply[i : i + size]].argmax(-1))
     return torch.cat(chosen).cpu().numpy()
 
 

@@ -9,6 +9,8 @@
 #   PY=python  DATA=data/encoded  PUZZLES=data/puzzles  TACTICS=data/tactics_all
 #   STEPS=8000  BATCH=256
 #   FINAL_WINDOWS=6000  PUZZLE_SAMPLE=20000  EVAL_EVERY=2000   (smaller for a quick check)
+#   MICRO=16  run each step in pieces, for a GPU with little free memory
+#             (and CHESSDT_EVAL_BATCH=64 to score in smaller pieces too)
 #
 # Safe to run again after an interruption: each stage is skipped if it already
 # finished, and training picks up from its last checkpoint instead of starting over.
@@ -24,6 +26,7 @@ BATCH=${BATCH:-256}
 FINAL_WINDOWS=${FINAL_WINDOWS:-6000}
 PUZZLE_SAMPLE=${PUZZLE_SAMPLE:-20000}
 EVAL_EVERY=${EVAL_EVERY:-2000}
+MICRO=${MICRO:-1}
 
 name=$1
 shift
@@ -36,7 +39,7 @@ else
   if [ -f "$out/resume.pt" ]; then echo "[$name] resuming from its last checkpoint"; else echo "[$name] training: $*"; fi
   # Appended, so an interrupted run keeps the log of what it already did.
   $PY -u scripts/train.py --data "$DATA" --out "$out" --steps "$STEPS" --batch "$BATCH" \
-    --eval-every "$EVAL_EVERY" --eval-windows 2000 --final-windows "$FINAL_WINDOWS" "$@" >> "$out.log" 2>&1
+    --eval-every "$EVAL_EVERY" --eval-windows 2000 --final-windows "$FINAL_WINDOWS" --micro "$MICRO" "$@" >> "$out.log" 2>&1
 fi
 
 if [ -f "$out/tactics.json" ]; then
