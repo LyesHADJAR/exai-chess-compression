@@ -27,6 +27,7 @@ Writes `compressibility.json` beside the checkpoint.
 
 import argparse
 import copy
+import gc
 import json
 import sys
 import time
@@ -52,6 +53,20 @@ from chessdt.data import Corpus  # noqa: E402
 from chessdt.evaluate import PuzzleSet, predict  # noqa: E402
 from chessdt.model import load_checkpoint  # noqa: E402
 from chessdt.splits import TEST  # noqa: E402
+
+
+def release(device: str) -> None:
+    """Hand back the memory a finished variant held.
+
+    Every variant is a full copy of the model. Without this the allocator keeps
+    them all cached, and on a machine short of memory the sweep slows from a
+    minute per variant to several as the copies pile up.
+    """
+    gc.collect()
+    if device == "mps":
+        torch.mps.empty_cache()
+    elif device.startswith("cuda"):
+        torch.cuda.empty_cache()
 
 
 class Probe:
@@ -130,6 +145,7 @@ def main() -> None:
 
     device = args.device
     reference, _ = load_checkpoint(args.checkpoint, device)
+    master = copy.deepcopy(reference).cpu()  # variants start from this, on the CPU
     corpus = Corpus(args.data, device)
     puzzles = PuzzleSet.load(args.puzzles, args.puzzle_sample, device) if args.puzzles else None
 
@@ -146,21 +162,42 @@ def main() -> None:
     )
 
     rows: list[dict] = []
+    sensitivity: dict[str, dict] = {}
     started = time.monotonic()
 
+    out = args.checkpoint.parent / "compressibility.json"
+
+    def save() -> None:
+        """Write what is known so far, so an interrupted sweep loses nothing."""
+        out.write_text(
+            json.dumps(
+                {
+                    "reference": {"mb": full_mb, **base},
+                    "variants": rows,
+                    "sensitivity": sensitivity,
+                },
+                indent=2,
+            )
+        )
+
     def run(family: str, setting: str, mb: float, apply) -> None:
-        model = copy.deepcopy(reference)
+        began = time.monotonic()
+        model = copy.deepcopy(master)
         apply(model)
+        model.to(device)
         r = probe.measure(model)
+        del model
+        release(device)
         row = {"family": family, "setting": setting, "mb": mb, "ratio": full_mb / mb, **r}
         rows.append(row)
+        save()
         pz = f"{r['puzzles'] * 100:6.2f}%" if r["puzzles"] is not None else "     -"
         print(
             f"  {setting:<26}{mb:>8.2f} MB {full_mb / mb:>6.1f}x"
-            f"   agree {r['agreement'] * 100:6.2f}%   puzzles {pz}   kl {r['kl']:.4f}",
+            f"   agree {r['agreement'] * 100:6.2f}%   puzzles {pz}   kl {r['kl']:.4f}"
+            f"   ({time.monotonic() - began:.0f}s)",
             flush=True,
         )
-        del model
 
     def every_weight(model):
         return [w for _, w in weight_matrices(model)]
@@ -216,27 +253,22 @@ def main() -> None:
     print("\nSENSITIVITY  one group at int4, everything else untouched")
     sizes = parameter_groups(reference)
     print(f"  {'group':<30}{'weights':>11}{'share':>8}   agree   puzzles")
-    sensitivity = {}
     for group in GROUPS:
-        model = copy.deepcopy(reference)
+        model = copy.deepcopy(master)
         for _, w in weight_matrices(model, only=group):
             quantize_(w, 4)
+        model.to(device)
         r = probe.measure(model)
+        del model
+        release(device)
         sensitivity[group] = {"weights": sizes[group], **r}
+        save()
         share = sizes[group] / sum(sizes.values())
         pz = f"{r['puzzles'] * 100:6.2f}%" if r["puzzles"] is not None else "     -"
         print(
             f"  {group:<30}{sizes[group]:>11,}{share:>7.1%}   {r['agreement'] * 100:5.1f}%   {pz}"
         )
-        del model
 
-    out = args.checkpoint.parent / "compressibility.json"
-    out.write_text(
-        json.dumps(
-            {"reference": {"mb": full_mb, **base}, "variants": rows, "sensitivity": sensitivity},
-            indent=2,
-        )
-    )
     print(f"\nWrote {out}  ({(time.monotonic() - started) / 60:.1f} min)")
 
 
