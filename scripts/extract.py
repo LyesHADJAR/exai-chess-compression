@@ -30,7 +30,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from chessdt.constants import DUMP_URL, MIN_PLIES, TARGET_GAMES  # noqa: E402
+from chessdt.constants import DUMP_URL, MIN_ELO, MIN_PLIES, TARGET_GAMES, dump_url  # noqa: E402
 from chessdt.encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, pack_board  # noqa: E402
 from chessdt.lichess import (  # noqa: E402
     RESULTS,
@@ -115,7 +115,14 @@ class Corpus:
         )
 
 
-def extract(source, out_dir: Path, target_games: int, report_every: int, resumed: int = 0) -> None:
+def extract(
+    source,
+    out_dir: Path,
+    target_games: int,
+    report_every: int,
+    resumed: int = 0,
+    min_elo: int = MIN_ELO,
+) -> None:
     handle, counter = open_dump(source)
     counter.reconnects += resumed
     corpus = Corpus(out_dir)
@@ -137,7 +144,7 @@ def extract(source, out_dir: Path, target_games: int, report_every: int, resumed
                 )
                 break
 
-            if not classify(game.headers, tally):
+            if not classify(game.headers, tally, min_elo):
                 continue
             if game.headers.get("Result") not in RESULTS:
                 continue
@@ -193,6 +200,8 @@ def summarise(corpus, tally, counter, skipped, elapsed: float) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--url", default=DUMP_URL)
+    ap.add_argument("--month", help="use that month's dump instead of --url, e.g. 2026-08")
+    ap.add_argument("--min-elo", type=int, default=MIN_ELO, help="rating floor for both players")
     ap.add_argument("--out", type=Path, default=Path("data/encoded"))
     ap.add_argument("--games", type=int, default=TARGET_GAMES)
     ap.add_argument("--report-every", type=int, default=10_000)
@@ -205,15 +214,19 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    source, resumed = args.url, 0
+    url = dump_url(args.month) if args.month else args.url
+    source, resumed = url, 0
     if args.prefetch_gb > 0:
-        source = args.out.parent / "dump_head.pgn.zst"
-        print(f"Fetching the first {args.prefetch_gb:g} GB of {args.url}")
-        resumed = fetch_head(args.url, source, int(args.prefetch_gb * 1024**3))
+        # Named for its month so several extractions can share a directory.
+        source = (
+            args.out.parent / f"dump_head_{url.rsplit('_', 1)[-1].removesuffix('.pgn.zst')}.pgn.zst"
+        )
+        print(f"Fetching the first {args.prefetch_gb:g} GB of {url}")
+        resumed = fetch_head(url, source, int(args.prefetch_gb * 1024**3))
     else:
-        print(f"Streaming {args.url}")
-    print(f"Target {args.games:,} games into {args.out}/\n")
-    extract(source, args.out, args.games, args.report_every, resumed)
+        print(f"Streaming {url}")
+    print(f"Target {args.games:,} games, both players rated {args.min_elo}+, into {args.out}/\n")
+    extract(source, args.out, args.games, args.report_every, resumed, args.min_elo)
 
 
 if __name__ == "__main__":

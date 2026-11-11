@@ -27,7 +27,14 @@ N_MOVES = 1968
 DUMP_MONTH = "2026-09"
 DUMP_GAMES = 89_616_462
 DUMP_SIZE_GB = 29.2
-DUMP_URL = f"https://database.lichess.org/standard/lichess_db_standard_rated_{DUMP_MONTH}.pgn.zst"
+
+
+def dump_url(month: str) -> str:
+    """The monthly standard-games dump for `month`, written like 2026-09."""
+    return f"https://database.lichess.org/standard/lichess_db_standard_rated_{month}.pgn.zst"
+
+
+DUMP_URL = dump_url(DUMP_MONTH)
 
 
 #: What a square can hold as the model sees it. The twelve pieces and the

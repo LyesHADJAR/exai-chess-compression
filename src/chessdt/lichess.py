@@ -69,8 +69,12 @@ class Tally:
         return self.termination_ok / self.scanned if self.scanned else 0.0
 
 
-def classify(headers, tally: Tally) -> bool:
-    """Apply the collection filters in order, recording survivors at each stage."""
+def classify(headers, tally: Tally, min_elo: int = MIN_ELO) -> bool:
+    """Apply the collection filters in order, recording survivors at each stage.
+
+    `min_elo` is the floor for both players. The reference corpus uses 1800; a
+    corpus meant to teach a model what rating means needs weaker players too.
+    """
     tally.scanned += 1
 
     white = parse_elo(headers.get("WhiteElo"))
@@ -79,7 +83,7 @@ def classify(headers, tally: Tally) -> bool:
         return False
     tally.rated += 1
 
-    if white < MIN_ELO or black < MIN_ELO:
+    if white < min_elo or black < min_elo:
         return False
     tally.rating_ok += 1
 
