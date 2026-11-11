@@ -60,9 +60,32 @@ else
   echo "  not started"
 fi
 rule
+echo "ROUND TWO PREPARATION (mate scan and puzzles for the v2 corpus)"
+if pgrep -f prepare_v2 > /dev/null; then
+  echo "  running. Last line:"
+  tail -n 1 prepare_v2.log 2> /dev/null | cut -c1-90 | sed 's/^/    /'
+elif grep -q "^Ready" prepare_v2.log 2> /dev/null; then
+  echo "  READY"
+elif [ -f prepare_v2.log ]; then
+  echo "  not running and not finished. Last lines:"
+  tail -n 3 prepare_v2.log | cut -c1-90 | sed 's/^/    /'
+else
+  echo "  not started"
+fi
+rule
 echo "MACHINE"
 df -h ~ 2> /dev/null | awk 'NR==2 {print "  free disk:   " $4}'
-command -v free > /dev/null && free -g | awk '/Mem:/ {print "  free memory: " $7 " GB"}'
-command -v nvidia-smi > /dev/null && nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total \
-  --format=csv,noheader 2> /dev/null | sed 's/^/  GPU (use, memory): /'
+# Inside a container, free(1) shows the whole host. The container's own limit
+# lives in the cgroup files.
+limit=""
+if [ -r /sys/fs/cgroup/memory.max ]; then
+  limit=$(cat /sys/fs/cgroup/memory.max); used=$(cat /sys/fs/cgroup/memory.current)
+elif [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+  limit=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes); used=$(cat /sys/fs/cgroup/memory/memory.usage_in_bytes)
+fi
+if [ -n "$limit" ] && [ "$limit" != max ]; then
+  awk -v u="$used" -v l="$limit" 'BEGIN { if (l < 1e12) printf "  memory:      %.0f GB used of the %.0f GB this server may use\n", u/1e9, l/1e9 }'
+fi
+gpu=$(nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader 2> /dev/null)
+case "$gpu" in *N/A* | *Insufficient* | "") ;; *) echo "  GPU (use, memory): $gpu" ;; esac
 exit 0
