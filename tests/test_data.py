@@ -157,3 +157,65 @@ def test_an_inconsistent_corpus_is_refused(tmp_path):
     np.save(tmp_path / "split_labels.npy", np.zeros(99, dtype=np.uint8))
     with pytest.raises(ValueError, match="inconsistent"):
         Corpus(tmp_path)
+
+
+# ── Tactical sampling ─────────────────────────────────────────────────────
+
+
+def tactics_file(path, positions, splits):
+    np.savez(
+        path,
+        position=np.asarray(positions, dtype=np.int64),
+        split=np.asarray(splits, dtype=np.uint8),
+        offset=np.arange(len(positions) + 1, dtype=np.int64),
+        moves=np.zeros(len(positions), dtype=np.uint16),
+    )
+
+
+def test_tactical_windows_contain_a_tactical_position(corpus, tmp_path):
+    tactics_file(tmp_path / "t.npz", [2], [int(TRAIN)])  # a position in game 0
+    assert corpus.load_tactics(tmp_path / "t.npz") == 1
+
+    generator = torch.Generator().manual_seed(0)
+    for _ in range(20):
+        batch = corpus.sample_train(8, 3, generator, tactical_fraction=1.0)
+        # Position 2 is ply 2 of game 0; its window starts at 0, 1 or 2.
+        assert batch.moves.shape == (8, 3)
+    starts = set()
+    for _ in range(40):
+        s = corpus.sample_train(4, 3, generator, tactical_fraction=1.0).moves[:, 0]
+        starts.update(s.tolist())
+    # Starting at ply 0, 1 or 2 puts a different move first, so all three occur.
+    assert len(starts) == 3
+
+
+def test_a_tactical_window_never_starts_before_its_game(corpus, tmp_path):
+    tactics_file(tmp_path / "t.npz", [0], [int(TRAIN)])  # the very first position
+    corpus.load_tactics(tmp_path / "t.npz")
+    generator = torch.Generator().manual_seed(1)
+    for _ in range(30):
+        batch = corpus.sample_train(6, 4, generator, tactical_fraction=1.0)
+        assert batch.valid[:, 0].all(), "a window left its game"
+        assert (batch.moves[:, 0] == MOVE_TO_INDEX["e2e4"]).all()
+
+
+def test_held_out_tactical_positions_are_never_loaded(corpus, tmp_path):
+    tactics_file(tmp_path / "t.npz", [0, 5, 6], [int(TRAIN), int(TEST), int(TEST)])
+    assert corpus.load_tactics(tmp_path / "t.npz") == 1
+
+
+def test_a_file_with_only_held_out_positions_is_refused(corpus, tmp_path):
+    tactics_file(tmp_path / "t.npz", [5], [int(TEST)])
+    with pytest.raises(ValueError, match="--splits train"):
+        corpus.load_tactics(tmp_path / "t.npz")
+
+
+def test_tactical_sampling_needs_the_positions_first(corpus):
+    with pytest.raises(ValueError, match="load_tactics"):
+        corpus.sample_train(4, 3, torch.Generator().manual_seed(0), tactical_fraction=0.5)
+
+
+def test_without_a_fraction_sampling_is_unchanged(corpus):
+    a = corpus.sample_train(6, 3, torch.Generator().manual_seed(3))
+    b = corpus.sample_train(6, 3, torch.Generator().manual_seed(3), tactical_fraction=0.0)
+    assert torch.equal(a.moves, b.moves)

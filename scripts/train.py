@@ -20,11 +20,12 @@ Writes into the run directory:
 """
 
 import argparse
+import ast
 import json
 import math
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 
 import torch
@@ -32,7 +33,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from chessdt.constants import REFERENCE  # noqa: E402
+from chessdt.constants import PRESETS, SIZE_CAP_BYTES  # noqa: E402
 from chessdt.data import Corpus  # noqa: E402
 from chessdt.evaluate import autocast, score  # noqa: E402
 from chessdt.model import ChessDT, load_checkpoint, save_checkpoint  # noqa: E402
@@ -95,6 +96,29 @@ def main() -> None:
         help="cap the end-of-run scoring; for smoke runs only",
     )
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--preset", choices=sorted(PRESETS), default="v1", help="model size")
+    ap.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="OPTION=VALUE",
+        help="override a model option, e.g. --set summary_tokens=4 --set geometry=True",
+    )
+    ap.add_argument(
+        "--tactics", type=Path, default=None, help="mate-in-one set, with the train split"
+    )
+    ap.add_argument(
+        "--tactical-fraction",
+        type=float,
+        default=0.0,
+        help="share of windows built around a mate-in-one position",
+    )
+    ap.add_argument(
+        "--micro",
+        type=int,
+        default=1,
+        help="run each batch in this many pieces, for models that do not fit at once",
+    )
     ap.add_argument("--device", default=pick_device())
     args = ap.parse_args()
     if args.eval_every < CALIBRATION_STEPS:
@@ -107,13 +131,28 @@ def main() -> None:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    cfg = REFERENCE
+    known = {f.name for f in fields(PRESETS[args.preset])}
+    overrides = {}
+    for item in args.set:
+        key, _, value = item.partition("=")
+        if key not in known:
+            ap.error(f"--set {key}: not a model option; choose from {sorted(known)}")
+        overrides[key] = ast.literal_eval(value)
+    cfg = replace(PRESETS[args.preset], **overrides)
+    if cfg.artifact_bytes() > SIZE_CAP_BYTES:
+        ap.error(f"this model is {cfg.artifact_bytes() / 1024**2:.1f} MiB, over the 100 MiB cap")
+    if args.tactical_fraction and not args.tactics:
+        ap.error("--tactical-fraction needs --tactics")
     plies = cfg.context_plies
     print(f"Device: {device}" + (f" ({torch.cuda.get_device_name()})" if device == "cuda" else ""))
 
     corpus = Corpus(args.data, device)
     val_starts = corpus.split_starts(int(VAL), plies, limit=args.eval_windows)
     print(f"Corpus: {len(corpus):,} positions, {len(corpus.train_positions):,} for training")
+    if args.tactical_fraction:
+        found = corpus.load_tactics(args.tactics)
+        print(f"Tactics: {found:,} training positions with a mate in one, "
+              f"{args.tactical_fraction:.0%} of windows built around one")  # fmt: skip
 
     model = ChessDT(cfg).to(device)
     optimizer = build_optimizer(model, args.lr, args.weight_decay)
@@ -121,7 +160,11 @@ def main() -> None:
         "cuda", enabled=device == "cuda" and not torch.cuda.is_bf16_supported()
     )
     generator = torch.Generator(device=device).manual_seed(args.seed)
-    print(f"Model: {sum(p.numel() for p in model.parameters()):,} parameters")
+    print(
+        f"Model: {sum(p.numel() for p in model.parameters()):,} parameters "
+        f"({args.preset}{', ' + ', '.join(args.set) if args.set else ''}), "
+        f"{cfg.stream_tokens} tokens per window"
+    )
 
     step, total, best, elapsed = 0, args.steps, 0.0, 0.0
     resume = run / "resume.pt"
@@ -174,23 +217,28 @@ def main() -> None:
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(step, horizon, args.lr, args.warmup)
 
-        batch = corpus.sample_train(args.batch, plies, generator)
-        with autocast(device):
-            logits = model(*batch.inputs())
-        logits, target = logits.float()[batch.valid], batch.moves[batch.valid]
-        loss = F.cross_entropy(logits, target)
-
+        batch = corpus.sample_train(args.batch, plies, generator, args.tactical_fraction)
+        wanted = int(batch.valid.sum())
         optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
+        loss_sum, hits, count = 0.0, 0, 0
+        for piece in batch.split(args.micro):
+            with autocast(device):
+                logits = model(*piece.inputs())
+            logits, target = logits.float()[piece.valid], piece.moves[piece.valid]
+            piece_loss = F.cross_entropy(logits, target, reduction="sum") / wanted
+            scaler.scale(piece_loss).backward()
+            loss_sum += piece_loss.item() * wanted
+            hits += (logits.argmax(-1) == target).sum().item()
+            count += len(target)
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
         step += 1
 
-        seen_loss += loss.item() * len(target)
-        seen_hits += (logits.argmax(-1) == target).sum().item()
-        seen_count += len(target)
+        seen_loss += loss_sum
+        seen_hits += hits
+        seen_count += count
 
         if total is None and step == CALIBRATION_FROM:
             calibration_mark = time.monotonic()

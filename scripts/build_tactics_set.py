@@ -29,7 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.encoding import BOARD_RECORD_BYTES  # noqa: E402
-from chessdt.splits import TEST, VAL  # noqa: E402
+from chessdt.splits import TEST, TRAIN, VAL  # noqa: E402
 from chessdt.tactics import scan_mates  # noqa: E402
 
 BLOCK = 4000  # positions per task; small enough to balance, large enough to amortise
@@ -40,13 +40,24 @@ def main() -> None:
     ap.add_argument("--corpus", type=Path, default=Path("data/encoded"))
     ap.add_argument("--out", type=Path, default=Path("data/tactics"))
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument(
+        "--splits",
+        nargs="+",
+        choices=("train", "val", "test"),
+        default=["val", "test"],
+        help="which splits to scan; train is needed to emphasise tactics while training",
+    )
     args = ap.parse_args()
 
     records = np.memmap(args.corpus / "positions.bin", dtype=np.uint8, mode="r")
     records = records.reshape(-1, BOARD_RECORD_BYTES)
     labels = np.load(args.corpus / "split_labels.npy")
-    wanted = np.flatnonzero((labels == int(VAL)) | (labels == int(TEST)))
-    print(f"Scanning {len(wanted):,} held-out positions for a mate in one ...", flush=True)
+    chosen = {"train": int(TRAIN), "val": int(VAL), "test": int(TEST)}
+    wanted = np.flatnonzero(np.isin(labels, [chosen[name] for name in args.splits]))
+    print(
+        f"Scanning {len(wanted):,} positions ({', '.join(args.splits)}) for a mate in one ...",
+        flush=True,
+    )
 
     blocks = [wanted[i : i + BLOCK] for i in range(0, len(wanted), BLOCK)]
     payloads = [np.ascontiguousarray(records[b]).tobytes() for b in blocks]
@@ -75,10 +86,12 @@ def main() -> None:
         moves=np.asarray(moves, dtype=np.uint16),
     )
     split = np.asarray(split)
-    for name, label in (("validation", VAL), ("test", TEST)):
-        n = int((split == int(label)).sum())
-        print(f"  {name:<11}{n:>7,} positions with a mate in one (standard error about "
-              f"{(0.25 / max(n, 1)) ** 0.5 * 100:.1f} points)")  # fmt: skip
+    for name in args.splits:
+        n = int((split == chosen[name]).sum())
+        print(
+            f"  {name:<6}{n:>8,} positions with a mate in one "
+            f"(standard error about {(0.25 / max(n, 1)) ** 0.5 * 100:.1f} points)"
+        )
     print(f"Wrote {args.out / 'mate_in_one.npz'}")
 
 

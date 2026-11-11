@@ -82,6 +82,12 @@ class Batch:
     def inputs(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.codes, self.side, self.cond, self.moves
 
+    def split(self, parts: int) -> list["Batch"]:
+        """Cut into `parts` consecutive pieces, for models too large to run at once."""
+        size = -(-len(self.codes) // parts)
+        fields = (self.codes, self.side, self.cond, self.moves, self.valid, self.labels)
+        return [Batch(*(t[i : i + size] for t in fields)) for i in range(0, len(self.codes), size)]
+
 
 class Corpus:
     """The encoded game corpus, resident on one device."""
@@ -115,6 +121,8 @@ class Corpus:
         self.outcome = torch.from_numpy(outcome).to(device)
         self.elo = torch.from_numpy(elo).to(device)
         self.game_end = torch.from_numpy(np.repeat(offsets + lengths, lengths)).to(device)
+        self.game_start = torch.from_numpy(np.repeat(offsets, lengths)).to(device)
+        self.tactical: torch.Tensor | None = None
 
         self.train_positions = torch.from_numpy(np.flatnonzero(labels == TRAIN)).to(device)
         self._offsets, self._lengths = offsets, lengths
@@ -139,12 +147,48 @@ class Corpus:
             labels=self.labels[index],
         )
 
-    def sample_train(self, batch: int, plies: int, generator: torch.Generator) -> Batch:
-        """A random batch of training windows."""
+    def load_tactics(self, path: str | Path) -> int:
+        """Load the positions with a mate in one that can be used for training.
+
+        Only positions in training games: a held-out game's positions must not
+        reach the model however they are sampled. Returns how many there are.
+        """
+        found = np.load(path)
+        positions = found["position"][found["split"] == int(TRAIN)]
+        if not len(positions):
+            raise ValueError(f"{path} has no training positions; build it with --splits train")
+        self.tactical = torch.from_numpy(positions).to(self.device)
+        return len(positions)
+
+    def sample_train(
+        self,
+        batch: int,
+        plies: int,
+        generator: torch.Generator,
+        tactical_fraction: float = 0.0,
+    ) -> Batch:
+        """A random batch of training windows.
+
+        Mate in one is about 0.4% of positions, so ordinary sampling barely
+        rewards finding it. With `tactical_fraction` that share of the windows
+        is built around a mate-in-one position instead, placed at a random ply
+        of the window so the model sees it with different amounts of history.
+        """
         pick = torch.randint(
             len(self.train_positions), (batch,), generator=generator, device=self.device
         )
-        return self.window(self.train_positions[pick], plies)
+        starts = self.train_positions[pick]
+
+        count = round(tactical_fraction * batch)
+        if count:
+            if self.tactical is None:
+                raise ValueError("tactical sampling needs load_tactics() first")
+            chosen = self.tactical[
+                torch.randint(len(self.tactical), (count,), generator=generator, device=self.device)
+            ]
+            offset = torch.randint(plies, (count,), generator=generator, device=self.device)
+            starts[:count] = torch.maximum(self.game_start[chosen], chosen - offset)
+        return self.window(starts, plies)
 
     def split_starts(self, split: int, plies: int, limit: int | None = None, seed: int = 0):
         """Window starts that tile every game of a split, end to end.
