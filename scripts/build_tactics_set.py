@@ -19,6 +19,7 @@ Writes `mate_in_one.npz` into `--out`:
 """
 
 import argparse
+import os
 import sys
 import time
 from multiprocessing import Pool
@@ -34,12 +35,17 @@ from chessdt.tactics import scan_mates  # noqa: E402
 
 BLOCK = 4000  # positions per task; small enough to balance, large enough to amortise
 
+#: In a container, os.cpu_count() reports the host's cores, not the share the
+#: container is allowed, and a pool that size can exhaust memory. Twelve is
+#: what the cluster's notebook servers are given; --workers overrides it.
+DEFAULT_WORKERS = 12
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--corpus", type=Path, default=Path("data/encoded"))
     ap.add_argument("--out", type=Path, default=Path("data/tactics"))
-    ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 1, DEFAULT_WORKERS))
     ap.add_argument(
         "--splits",
         nargs="+",
