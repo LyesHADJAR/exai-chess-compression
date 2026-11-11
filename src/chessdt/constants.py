@@ -71,13 +71,20 @@ TARGET_GAMES = 300_000
 SPLIT_FRACTIONS = {"train": 0.90, "val": 0.05, "test": 0.05}
 
 
+#: Offsets a square can differ from another by on the board: 15 each way.
+REL_OFFSETS = 15 * 15
+#: Distinct files, ranks and the two diagonals a square sits on.
+GEOMETRY_ROWS = 8 + 8 + 15 + 15
+
+
 @dataclass(frozen=True)
 class ModelConfig:
-    """Reference architecture.
+    """Architecture of the chess Decision Transformer.
 
-    A board encoder compresses 64 square tokens into one vector per ply; the
-    Decision Transformer backbone then runs over the 3K-token interleaved
-    stream of return, state and action.
+    A board encoder reads the 64 squares of a position; the Decision
+    Transformer backbone then runs over the interleaved stream of condition,
+    position and move. Every option below defaults to the reference model, so a
+    config that sets none of them is exactly v1.
     """
 
     # Board encoder
@@ -97,16 +104,43 @@ class ModelConfig:
 
     dropout: float = 0.1
 
+    # How much of the board reaches the backbone. The reference pools all 64
+    # squares into one vector per ply. More vectors keep more of the position;
+    # full_detail keeps every square.
+    summary_tokens: int = 1
+    full_detail: bool = False
+
+    #: Board geometry in the encoder: squares are embedded as the sum of their
+    #: file, rank and both diagonals, and attention gets a learned bias by the
+    #: offset between two squares.
+    geometry: bool = False
+
+    #: Share of training steps in which the conditioning is replaced by a
+    #: learned "unknown", so the model learns what the conditioning does.
+    cond_dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.summary_tokens < 1:
+            raise ValueError("summary_tokens must be at least 1")
+        if not 0.0 <= self.cond_dropout < 1.0:
+            raise ValueError("cond_dropout must be in [0, 1)")
+
+    @property
+    def state_tokens(self) -> int:
+        """How many tokens each position occupies in the backbone's stream."""
+        return 64 if self.full_detail else self.summary_tokens
+
     @property
     def stream_tokens(self) -> int:
-        """Length of the interleaved [R, s, a] stream."""
-        return self.context_plies * 3
+        """Length of the interleaved [condition, position..., move] stream."""
+        return self.context_plies * (self.state_tokens + 2)
 
     def parameter_count(self) -> int:
         """Exact parameter count for this configuration.
 
         `tests/test_model.py` asserts the built model matches this to the
-        parameter, and `tests/test_budget.py` guards the artifact size.
+        parameter for every option, and `tests/test_budget.py` guards the
+        artifact size.
         """
 
         def block(dim: int, ff: int) -> int:
@@ -119,11 +153,16 @@ class ModelConfig:
         backbone = self.layers * block(self.dim, self.ff)
 
         square_code_embed = SQUARE_CODES * self.enc_dim
-        square_embed = 64 * self.enc_dim
+        square_embed = (GEOMETRY_ROWS if self.geometry else 64) * self.enc_dim
+        relative_bias = self.enc_layers * self.enc_heads * REL_OFFSETS if self.geometry else 0
         side_embed = 2 * self.enc_dim
         encoder_norm = 2 * self.enc_dim
+        pooling = 0
+        if self.summary_tokens > 1 and not self.full_detail:
+            pooling = self.summary_tokens * self.enc_dim + 4 * self.enc_dim**2
         projection = self.enc_dim * self.dim + self.dim
         condition_embed = CONDITION_DIM * self.dim + self.dim
+        condition_null = self.dim if self.cond_dropout > 0 else 0
         move_embed = N_MOVES * self.dim
         ply_embed = self.context_plies * self.dim
         final_norm = 2 * self.dim
@@ -134,10 +173,13 @@ class ModelConfig:
             + backbone
             + square_code_embed
             + square_embed
+            + relative_bias
             + side_embed
             + encoder_norm
+            + pooling
             + projection
             + condition_embed
+            + condition_null
             + move_embed
             + ply_embed
             + final_norm
@@ -150,3 +192,15 @@ class ModelConfig:
 
 
 REFERENCE = ModelConfig()
+
+
+#: The size ladder. v1 is the reference; the others spend the room a 100 MiB
+#: artifact allows. Each stays under the cap with every option switched on.
+PRESETS = {
+    "v1": REFERENCE,
+    "m18": ModelConfig(enc_dim=320, enc_layers=4, enc_ff=960, dim=384, layers=6, ff=1024),
+    "m25": ModelConfig(enc_dim=320, enc_layers=5, enc_ff=960, dim=512, layers=5, ff=1344),
+}
+
+#: The largest artifact we will ship, in bytes of fp32 weights.
+SIZE_CAP_BYTES = 100 * 1024**2

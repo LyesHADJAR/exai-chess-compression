@@ -1,6 +1,15 @@
 """The released artifact size is a design constraint, so it is tested."""
 
-from chessdt.constants import N_MOVES, POSITION_TOKENS, REFERENCE, SPLIT_FRACTIONS
+from dataclasses import replace
+
+from chessdt.constants import (
+    N_MOVES,
+    POSITION_TOKENS,
+    PRESETS,
+    REFERENCE,
+    SIZE_CAP_BYTES,
+    SPLIT_FRACTIONS,
+)
 
 
 def test_parameter_count_stays_near_target():
@@ -31,3 +40,15 @@ def test_splits_sum_to_one():
 def test_encoding_constants_are_the_agreed_values():
     assert POSITION_TOKENS == 77
     assert N_MOVES == 1968
+
+
+def test_every_preset_fits_the_size_cap_with_the_options_on():
+    """The widest option (8 pooled vectors) adds parameters; the cap must still hold."""
+    for name, cfg in PRESETS.items():
+        loaded = replace(cfg, summary_tokens=8, geometry=True, cond_dropout=0.1)
+        assert loaded.artifact_bytes() <= SIZE_CAP_BYTES, f"{name} is {loaded.artifact_bytes()}"
+
+
+def test_the_ladder_actually_climbs():
+    sizes = [PRESETS[n].parameter_count() for n in ("v1", "m18", "m25")]
+    assert sizes == sorted(sizes) and sizes[0] < 12e6 < 17e6 < sizes[1] < 19e6 < 24e6 < sizes[2]

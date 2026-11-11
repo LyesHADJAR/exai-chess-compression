@@ -37,7 +37,7 @@ GROUPS = (
 def group_of(name: str) -> str:
     """Which sensitivity group a weight belongs to, from its parameter name."""
     if name.startswith("encoder."):
-        if ".attn." in name:
+        if ".attn." in name or name.startswith("encoder.pool."):
             return "board encoder: attention"
         if ".ffn." in name:
             return "board encoder: feed-forward"
