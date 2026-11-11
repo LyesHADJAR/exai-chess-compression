@@ -2,7 +2,8 @@
 
 import chess
 
-from chessdt.tactics import mating_moves
+from chessdt.encoding import MOVE_TO_INDEX, pack_board
+from chessdt.tactics import mating_moves, scan_mates
 
 
 def test_scholars_mate_is_found():
@@ -34,3 +35,19 @@ def test_the_board_is_left_exactly_as_it_was():
     before = board.fen()
     mating_moves(board)
     assert board.fen() == before
+
+
+def scholars_position() -> chess.Board:
+    board = chess.Board()
+    for san in ("e4", "e5", "Bc4", "Nc6", "Qh5", "Nf6"):
+        board.push_san(san)
+    return board
+
+
+def test_scanning_a_block_reports_only_the_rows_with_a_mate():
+    block = pack_board(chess.Board()) + pack_board(scholars_position()) + pack_board(chess.Board())
+    assert scan_mates(block) == [(1, [MOVE_TO_INDEX["h5f7"]])]
+
+
+def test_scanning_nothing_finds_nothing():
+    assert scan_mates(b"") == []

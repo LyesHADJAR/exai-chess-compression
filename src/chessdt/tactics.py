@@ -12,6 +12,9 @@ rate is a ceiling the model can be held against.
 """
 
 import chess
+import numpy as np
+
+from .encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, unpack_board
 
 
 def mating_moves(board: chess.Board) -> set[str]:
@@ -27,3 +30,19 @@ def mating_moves(board: chess.Board) -> set[str]:
                 mates.add(move.uci())
             board.pop()
     return mates
+
+
+def scan_mates(records: bytes) -> list[tuple[int, list[int]]]:
+    """Find the positions in a block of packed records that have a mate in one.
+
+    Takes the raw bytes of consecutive records, so it can be handed to a worker
+    process cheaply, and returns (row, mating move indices) for every row that
+    has one. Rows with no mate are not listed.
+    """
+    block = np.frombuffer(records, dtype=np.uint8).reshape(-1, BOARD_RECORD_BYTES)
+    found = []
+    for row, record in enumerate(block):
+        mates = mating_moves(unpack_board(record.tobytes()))
+        if mates:
+            found.append((row, sorted(MOVE_TO_INDEX[m] for m in mates)))
+    return found
