@@ -7,7 +7,10 @@
 #   bash scripts/run_wave.sh all
 #
 # Arms share the GPU, so two at once is mostly about keeping it busy. Add
-# `PARALLEL=1` for one at a time. Rerunning skips any arm that already finished.
+# `PARALLEL=1` for one at a time. Rerunning skips any arm that already finished
+# and resumes any that were interrupted from their last checkpoint, so it is the
+# right thing to run again after a restart. To start an arm over, delete its
+# folder in runs/arms first.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -57,7 +60,6 @@ esac
 run() {
   local name=${1%%|*} options=${1#*|}
   if [ -f "runs/arms/$name/evaluation.json" ]; then echo "[$name] already done"; return; fi
-  rm -rf "runs/arms/$name"
   # shellcheck disable=SC2086
   bash scripts/run_arm.sh "$name" $options || echo "[$name] FAILED, see runs/arms/$name.log"
 }
