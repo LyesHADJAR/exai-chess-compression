@@ -7,10 +7,16 @@ predicts every ply, and only positions carrying the split's own label count.
 Positions dropped as leaked still serve as history but are never scored.
 """
 
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .data import Batch, Corpus
+from .constants import ELO_CENTRE, ELO_SCALE, N_MOVES, PUZZLE_ELO, PUZZLE_OUTCOME
+from .data import Batch, Corpus, decode_records
+from .encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, unpack_board
 
 
 def autocast(device: str):
@@ -123,3 +129,108 @@ def alone(batch: Batch) -> Batch:
         valid=batch.valid.flatten().unsqueeze(1),
         labels=batch.labels.flatten().unsqueeze(1),
     )
+
+
+def normalised_rating(elo: float) -> float:
+    return (elo - ELO_CENTRE) / ELO_SCALE
+
+
+@dataclass
+class PuzzleSet:
+    """A sample of the puzzle database, resident on one device.
+
+    A puzzle has exactly one move that works, so it is the sharp half of the
+    fidelity measure: a model can agree with a human on the bulk of ordinary
+    positions and still have lost the tactic. Moves are scored with illegal
+    ones masked out, the same way for every model.
+    """
+
+    codes: torch.Tensor  # (N, 64) long
+    side: torch.Tensor  # (N,) long
+    target: torch.Tensor  # (N,) long
+    legal: torch.Tensor  # (N, N_MOVES) bool
+    rating: np.ndarray
+    mate_in_one: np.ndarray
+    device: str
+
+    @classmethod
+    def load(cls, directory: Path, sample: int, device: str, seed: int = 0) -> "PuzzleSet":
+        with np.load(directory / "puzzles.npz") as meta:
+            rating, themes = meta["rating"], meta["themes"]
+        records = np.memmap(directory / "positions.bin", dtype=np.uint8, mode="r")
+        records = records.reshape(-1, BOARD_RECORD_BYTES)
+        solutions = np.memmap(directory / "moves.bin", dtype=np.uint16, mode="r")
+
+        pick = np.sort(np.random.default_rng(seed).choice(len(records), sample, replace=False))
+        chosen = np.ascontiguousarray(records[pick])
+
+        legal = torch.zeros(sample, N_MOVES, dtype=torch.bool)
+        for row, record in enumerate(chosen):
+            board = unpack_board(record.tobytes())
+            legal[row, [MOVE_TO_INDEX[m.uci()] for m in board.legal_moves]] = True
+
+        codes, side = decode_records(torch.from_numpy(chosen))
+        return cls(
+            codes=codes.to(device),
+            side=side.to(device),
+            target=torch.from_numpy(solutions[pick].astype(np.int64)).to(device),
+            legal=legal.to(device),
+            rating=rating[pick],
+            mate_in_one=np.asarray([b"mateIn1" in t for t in themes[pick]]),
+            device=device,
+        )
+
+    def __len__(self) -> int:
+        return len(self.target)
+
+    @torch.no_grad()
+    def solve(
+        self, model, outcome: float = PUZZLE_OUTCOME, elo: float = PUZZLE_ELO, chunk: int = 1024
+    ) -> dict:
+        """Solve rates, given the conditioning the puzzle is posed under.
+
+        A puzzle has no game around it, so the player to move is described by
+        `outcome` and `elo`. The defaults say the solver is winning and strong.
+        """
+        model.eval()
+        cond = torch.tensor([outcome, normalised_rating(elo)], device=self.device)
+        raw = torch.zeros(len(self), dtype=torch.bool, device=self.device)
+        top1 = torch.zeros_like(raw)
+        top3 = torch.zeros_like(raw)
+
+        for i in range(0, len(self), chunk):
+            n = len(self.codes[i : i + chunk])
+            batch = Batch(
+                codes=self.codes[i : i + n, None],
+                side=self.side[i : i + n, None],
+                cond=cond.expand(n, 1, 2),
+                moves=torch.zeros(n, 1, dtype=torch.long, device=self.device),
+                valid=torch.ones(n, 1, dtype=torch.bool, device=self.device),
+                labels=torch.zeros(n, 1, dtype=torch.uint8, device=self.device),
+            )
+            logits = predict(model, batch, self.device)[:, 0]
+            target = self.target[i : i + n]
+            raw[i : i + n] = topk_hits(logits, target, 1)
+            masked = logits.masked_fill(~self.legal[i : i + n], float("-inf"))
+            top1[i : i + n] = topk_hits(masked, target, 1)
+            top3[i : i + n] = topk_hits(masked, target, 3)
+
+        solved = top1.cpu().numpy()
+        bands = {}
+        for low, high in ((0, 1000), (1000, 1500), (1500, 2000), (2000, 2500), (2500, 9999)):
+            inside = (self.rating >= low) & (self.rating < high)
+            if inside.any():
+                bands[f"{low}-{high}"] = {
+                    "solved": float(solved[inside].mean()),
+                    "puzzles": int(inside.sum()),
+                }
+
+        return {
+            "puzzles": len(self),
+            "solved": float(solved.mean()),
+            "solution_in_top3": float(top3.float().mean().item()),
+            "solved_without_legal_mask": float(raw.float().mean().item()),
+            "mate_in_one": float(solved[self.mate_in_one].mean()),
+            "mate_in_one_puzzles": int(self.mate_in_one.sum()),
+            "by_rating": bands,
+        }

@@ -25,7 +25,6 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -34,12 +33,9 @@ from chessdt.constants import (  # noqa: E402
     ELO_CENTRE,
     ELO_SCALE,
     N_MOVES,
-    PUZZLE_ELO,
-    PUZZLE_OUTCOME,
 )
-from chessdt.data import Batch, Corpus, decode_records  # noqa: E402
-from chessdt.encoding import BOARD_RECORD_BYTES, MOVE_TO_INDEX, unpack_board  # noqa: E402
-from chessdt.evaluate import alone, compare, predict, score, topk_hits  # noqa: E402
+from chessdt.data import Batch, Corpus  # noqa: E402
+from chessdt.evaluate import PuzzleSet, alone, compare, score  # noqa: E402
 from chessdt.model import load_checkpoint  # noqa: E402
 from chessdt.splits import TEST, VAL  # noqa: E402
 
@@ -74,70 +70,6 @@ ABLATIONS = {
     "earlier moves": ("replaced with random moves", scrambled_moves),
     "history": ("removed, each ply scored alone", alone),
 }
-
-
-def score_puzzles(model, directory: Path, sample: int, device: str, seed: int = 0) -> dict:
-    """Solve rate on a seeded sample of the puzzle set."""
-    with np.load(directory / "puzzles.npz") as meta:
-        ratings, themes = meta["rating"], meta["themes"]
-    records = np.memmap(directory / "positions.bin", dtype=np.uint8, mode="r")
-    records = records.reshape(-1, BOARD_RECORD_BYTES)
-    solutions = np.memmap(directory / "moves.bin", dtype=np.uint16, mode="r")
-
-    pick = np.sort(np.random.default_rng(seed).choice(len(records), sample, replace=False))
-    chosen = np.ascontiguousarray(records[pick])
-    target = torch.from_numpy(solutions[pick].astype(np.int64)).to(device)
-
-    legal = torch.zeros(sample, N_MOVES, dtype=torch.bool)
-    for row, record in enumerate(chosen):
-        moves = [MOVE_TO_INDEX[m.uci()] for m in unpack_board(record.tobytes()).legal_moves]
-        legal[row, moves] = True
-    legal = legal.to(device)
-
-    cond = torch.tensor([PUZZLE_OUTCOME, rating(PUZZLE_ELO)], device=device)
-    raw_hits = torch.zeros(sample, dtype=torch.bool, device=device)
-    legal_hits = torch.zeros(sample, dtype=torch.bool, device=device)
-    legal_hits3 = torch.zeros(sample, dtype=torch.bool, device=device)
-
-    for i in range(0, sample, 1024):
-        codes, side = decode_records(torch.from_numpy(chosen[i : i + 1024]).to(device))
-        n = len(codes)
-        batch = Batch(
-            codes=codes[:, None],
-            side=side[:, None],
-            cond=cond.expand(n, 1, 2),
-            moves=torch.zeros(n, 1, dtype=torch.long, device=device),
-            valid=torch.ones(n, 1, dtype=torch.bool, device=device),
-            labels=torch.zeros(n, 1, dtype=torch.uint8, device=device),
-        )
-        logits = predict(model, batch, device)[:, 0]
-        raw_hits[i : i + n] = logits.argmax(-1) == target[i : i + n]
-        masked = logits.masked_fill(~legal[i : i + n], float("-inf"))
-        legal_hits[i : i + n] = topk_hits(masked, target[i : i + n], 1)
-        legal_hits3[i : i + n] = topk_hits(masked, target[i : i + n], 3)
-
-    solved = legal_hits.cpu().numpy()
-    picked_ratings = ratings[pick]
-    mate_in_one = np.asarray([b"mateIn1" in t for t in themes[pick]])
-
-    bands = {}
-    for low, high in ((0, 1000), (1000, 1500), (1500, 2000), (2000, 2500), (2500, 9999)):
-        inside = (picked_ratings >= low) & (picked_ratings < high)
-        if inside.any():
-            bands[f"{low}-{high}"] = {
-                "solved": float(solved[inside].mean()),
-                "puzzles": int(inside.sum()),
-            }
-
-    return {
-        "puzzles": sample,
-        "solved": float(solved.mean()),
-        "solution_in_top3": float(legal_hits3.float().mean().item()),
-        "solved_without_legal_mask": float(raw_hits.float().mean().item()),
-        "mate_in_one": float(solved[mate_in_one].mean()),
-        "mate_in_one_puzzles": int(mate_in_one.sum()),
-        "by_rating": bands,
-    }
 
 
 def main() -> None:
@@ -193,12 +125,33 @@ def main() -> None:
 
     if args.puzzles is not None:
         print(f"\nPUZZLES — {args.puzzle_sample:,} sampled, illegal moves masked")
-        report["puzzle_set"] = p = score_puzzles(model, args.puzzles, args.puzzle_sample, device)
+        puzzles = PuzzleSet.load(args.puzzles, args.puzzle_sample, device)
+        report["puzzle_set"] = p = puzzles.solve(model)
         print(f"  solved        {p['solved'] * 100:6.2f}%")
         print(f"  in top three  {p['solution_in_top3'] * 100:6.2f}%")
         print(f"  mate in one   {p['mate_in_one'] * 100:6.2f}%   ({p['mate_in_one_puzzles']:,})")
         for band, r in p["by_rating"].items():
             print(f"  rated {band:<10} {r['solved'] * 100:6.2f}%   ({r['puzzles']:,})")
+
+        print("\nSTEERING — the same puzzles, posed to different players")
+        print(f"  {'conditioned as':<26}{'solved':>9}{'top-3':>9}")
+        report["steering"] = {}
+        for label, outcome, elo in (
+            ("winning, rated 2400", 1.0, 2400.0),
+            ("winning, rated 1200", 1.0, 1200.0),
+            ("neutral, rated 2000", 0.0, 2000.0),
+            ("losing, rated 2400", -1.0, 2400.0),
+            ("losing, rated 1200", -1.0, 1200.0),
+        ):
+            r = puzzles.solve(model, outcome=outcome, elo=elo)
+            report["steering"][label] = r
+            print(f"  {label:<26}{r['solved'] * 100:>8.2f}%{r['solution_in_top3'] * 100:>8.2f}%")
+        top, bottom = (
+            report["steering"]["winning, rated 2400"],
+            report["steering"]["losing, rated 1200"],
+        )
+        spread = (top["solved"] - bottom["solved"]) * 100
+        print(f"  strongest minus weakest: {spread:+.2f} points")
 
     out = args.checkpoint.parent / "evaluation.json"
     out.write_text(json.dumps(report, indent=2))
