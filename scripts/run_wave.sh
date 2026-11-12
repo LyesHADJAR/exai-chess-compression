@@ -73,6 +73,16 @@ case "$group" in
   *) echo "usage: $0 core|extra|round2|round3|all"; exit 2 ;;
 esac
 
+# t25 was measured before the new probes and the theme breakdown existed. Training is
+# not repeated: only its measurements are redone, so the new columns have a baseline.
+# The old evaluation is kept as evaluation_round2.json.
+if [ "$group" = round3 ] && [ -f runs/arms/t25/results.json ] \
+    && [ ! -f runs/arms/t25/tactics_fork.json ]; then
+  cp runs/arms/t25/evaluation.json runs/arms/t25/evaluation_round2.json
+  rm -f runs/arms/t25/evaluation.json
+  bash scripts/run_arm.sh t25 --tactics "$M1" --tactical-fraction 0.25
+fi
+
 run() {
   local name=${1%%|*} options=${1#*|}
   if [ -f "runs/arms/$name/evaluation.json" ]; then echo "[$name] already done"; return; fi
