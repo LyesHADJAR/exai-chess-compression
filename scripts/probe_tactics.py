@@ -1,10 +1,12 @@
 """
-Measure how well a model finds mate in one, against the humans it imitates.
+Measure how well a model finds a tactic, against the humans it imitates.
 
     python scripts/build_tactics_set.py            # once
     python scripts/probe_tactics.py runs/reference/model_best.pt
+    python scripts/probe_tactics.py runs/reference/model_best.pt \
+        --set data/tactics/fork.npz --name tactics_fork.json
 
-Uses the fixed set of held-out positions with a mate in one built by
+Uses the fixed set of held-out positions with the tactic built by
 `build_tactics_set.py`, so every model is measured on the same thousands of
 positions. The human rate is the ceiling; the gap to it is the weakness.
 
@@ -12,7 +14,8 @@ The model is scored twice: with the history it would have in a game, and with
 none, as it is posed a puzzle. The difference shows how much of its tactical
 ability comes from the plies before the position.
 
-Writes `tactics.json` beside the checkpoint.
+Writes `tactics.json` (or `--name`) beside the checkpoint. The keys keep their
+"mate" names whatever the tactic is, so older tables still read them.
 """
 
 import argparse
@@ -49,6 +52,7 @@ def main() -> None:
     ap.add_argument("--data", type=Path, default=Path("data/encoded"))
     ap.add_argument("--set", type=Path, default=Path("data/tactics/mate_in_one.npz"))
     ap.add_argument("--split", choices=("val", "test"), default="test")
+    ap.add_argument("--name", default="tactics.json", help="result file, beside the checkpoint")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
 
@@ -86,6 +90,7 @@ def main() -> None:
 
     n = len(position)
     result = {
+        "motif": args.set.stem,
         "split": args.split,
         "positions": n,
         "human_plays_mate": rate(human),
@@ -93,10 +98,11 @@ def main() -> None:
         "model_plays_mate_without_history": rate(alone),
         "standard_error": (0.25 / n) ** 0.5,
     }
-    (args.checkpoint.parent / "tactics.json").write_text(json.dumps(result, indent=2))
+    (args.checkpoint.parent / args.name).write_text(json.dumps(result, indent=2))
 
-    print(f"{n:,} {args.split} positions with a mate in one")
-    print(f"  a human played the mate          {result['human_plays_mate'] * 100:5.1f}%")
+    motif = args.set.stem.replace("_", " ")
+    print(f"{n:,} {args.split} positions with {motif}")
+    print(f"  a human played it                {result['human_plays_mate'] * 100:5.1f}%")
     print(f"  the model, with its history      {result['model_plays_mate'] * 100:5.1f}%")
     alone_rate = result["model_plays_mate_without_history"]
     print(f"  the model, no history            {alone_rate * 100:5.1f}%")

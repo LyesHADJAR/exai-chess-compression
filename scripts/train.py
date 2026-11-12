@@ -105,13 +105,17 @@ def main() -> None:
         help="override a model option, e.g. --set summary_tokens=4 --set geometry=True",
     )
     ap.add_argument(
-        "--tactics", type=Path, default=None, help="mate-in-one set, with the train split"
+        "--tactics",
+        type=Path,
+        nargs="+",
+        default=None,
+        help="tactic sets with the train split (mate in one, ...); several are mixed evenly",
     )
     ap.add_argument(
         "--tactical-fraction",
         type=float,
         default=0.0,
-        help="share of windows built around a mate-in-one position",
+        help="share of windows built around a tactical position (see --tactics)",
     )
     ap.add_argument(
         "--tactical-anneal",
@@ -162,7 +166,8 @@ def main() -> None:
             if args.tactical_anneal
             else ""
         )
-        print(f"Tactics: {found:,} training positions with a mate in one, "
+        names = ", ".join(path.stem for path in args.tactics)
+        print(f"Tactics: {found:,} training positions ({names}), "
               f"{args.tactical_fraction:.0%} of windows built around one{fade}")  # fmt: skip
 
     model = ChessDT(cfg).to(device)

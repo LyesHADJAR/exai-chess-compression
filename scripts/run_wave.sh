@@ -4,6 +4,7 @@
 #   bash scripts/run_wave.sh core      # the cheap, most informative arms
 #   bash scripts/run_wave.sh extra     # the larger ones
 #   bash scripts/run_wave.sh round2   # tactical emphasis, tuned, and two sizes
+#   bash scripts/run_wave.sh round3   # tactics beyond mate in one
 #   bash scripts/run_wave.sh all
 #
 # Arms share the GPU, so two at once is mostly about keeping it busy. Add
@@ -49,12 +50,27 @@ round2=(
   "m25_t25|--preset m25 --tactics $T --tactical-fraction 0.25"
 )
 
+# Third round. Mate-in-one emphasis (t25 above) is the recipe to beat. These add
+# a forced mate in two, free pieces and forks to the positions the training windows
+# are built around, and ask whether that lifts the puzzles it should. t25_seed1
+# repeats the recipe with another seed, to say how far a result moves by chance.
+TD=${TACTICS:-data/tactics_all}
+M1=$TD/mate_in_one.npz M2=$TD/mate_in_two.npz FP=$TD/free_piece.npz FK=$TD/fork.npz
+round3=(
+  "t25_seed1|--seed 1 --tactics $M1 --tactical-fraction 0.25"
+  "x25_mates|--tactics $M1 $M2 --tactical-fraction 0.25"
+  "x25_all|--tactics $M1 $M2 $FP $FK --tactical-fraction 0.25"
+  "x25_quiet|--tactics $FP $FK --tactical-fraction 0.25"
+  "x40_all|--tactics $M1 $M2 $FP $FK --tactical-fraction 0.4"
+)
+
 case "$group" in
+  round3) arms=("${round3[@]}") ;;
   round2) arms=("${round2[@]}") ;;
   core) arms=("${core[@]}") ;;
   extra) arms=("${extra[@]}") ;;
   all) arms=("${core[@]}" "${extra[@]}") ;;
-  *) echo "usage: $0 core|extra|round2|all"; exit 2 ;;
+  *) echo "usage: $0 core|extra|round2|round3|all"; exit 2 ;;
 esac
 
 run() {
@@ -67,4 +83,7 @@ export -f run
 
 printf '%s\n' "${arms[@]}" | xargs -P "$PARALLEL" -I{} bash -c 'run "$1"' _ {}
 echo
-$PY scripts/compare_runs.py runs/arms/*/ --baseline runs/arms/baseline
+# Round three is judged against the recipe it tries to improve, not the bare baseline.
+base=baseline
+[ "$group" = round3 ] && base=t25
+$PY scripts/compare_runs.py runs/arms/*/ --baseline "runs/arms/$base"

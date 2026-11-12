@@ -49,6 +49,13 @@ else
   $PY scripts/probe_tactics.py "$out/model_best.pt" --data "$DATA" --set "$TACTICS/mate_in_one.npz" \
     > "$out/tactics.log" 2>&1
 fi
+# Other tactics, when their sets were built: how often the model takes each one.
+for motif in mate_in_two free_piece fork; do
+  if [ -f "$TACTICS/$motif.npz" ] && [ ! -f "$out/tactics_$motif.json" ]; then
+    $PY scripts/probe_tactics.py "$out/model_best.pt" --data "$DATA" --set "$TACTICS/$motif.npz" \
+      --name "tactics_$motif.json" > "$out/tactics_$motif.log" 2>&1
+  fi
+done
 if [ ! -f "$out/evaluation.json" ]; then
   $PY scripts/evaluate.py "$out/model_best.pt" --data "$DATA" --puzzles "$PUZZLES" \
     --puzzle-sample "$PUZZLE_SAMPLE" --windows 1500 --ablation-windows 500 > "$out/evaluation.log" 2>&1

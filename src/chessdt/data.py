@@ -136,6 +136,7 @@ class Corpus:
         self.game_end = torch.from_numpy(np.repeat(offsets + lengths, lengths)).to(device)
         self.game_start = torch.from_numpy(np.repeat(offsets, lengths)).to(device)
         self.tactical: torch.Tensor | None = None
+        self._set_start = self._set_size = torch.zeros(0, dtype=torch.long, device=device)
 
         self.train_positions = torch.from_numpy(np.flatnonzero(labels == TRAIN)).to(device)
         self._offsets, self._lengths = offsets, lengths
@@ -160,18 +161,29 @@ class Corpus:
             labels=self.labels[index],
         )
 
-    def load_tactics(self, path: str | Path) -> int:
-        """Load the positions with a mate in one that can be used for training.
+    def load_tactics(self, paths: str | Path | list[str | Path]) -> int:
+        """Load the positions with a tactic that can be used for training.
 
-        Only positions in training games: a held-out game's positions must not
-        reach the model however they are sampled. Returns how many there are.
+        Takes one file or several. Several are mixed evenly: a tactical window
+        picks a file first and a position in it second, so a rare motif is not
+        drowned by a common one. Only positions in training games are kept: a
+        held-out game's positions must not reach the model however they are
+        sampled. Returns how many positions there are in all.
         """
-        found = np.load(path)
-        positions = found["position"][found["split"] == int(TRAIN)]
-        if not len(positions):
-            raise ValueError(f"{path} has no training positions; build it with --splits train")
-        self.tactical = torch.from_numpy(positions).to(self.device)
-        return len(positions)
+        paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
+        sets = []
+        for path in paths:
+            found = np.load(path)
+            positions = found["position"][found["split"] == int(TRAIN)]
+            if not len(positions):
+                raise ValueError(f"{path} has no training positions; build it with --splits train")
+            sets.append(positions)
+        sizes = np.asarray([len(p) for p in sets], dtype=np.int64)
+        starts = np.concatenate([[0], np.cumsum(sizes)[:-1]])
+        self.tactical = torch.from_numpy(np.concatenate(sets)).to(self.device)
+        self._set_start = torch.from_numpy(starts).to(self.device)
+        self._set_size = torch.from_numpy(sizes).to(self.device)
+        return int(sizes.sum())
 
     def sample_train(
         self,
@@ -182,10 +194,11 @@ class Corpus:
     ) -> Batch:
         """A random batch of training windows.
 
-        Mate in one is about 0.4% of positions, so ordinary sampling barely
-        rewards finding it. With `tactical_fraction` that share of the windows
-        is built around a mate-in-one position instead, placed at a random ply
-        of the window so the model sees it with different amounts of history.
+        A tactic such as mate in one is a fraction of a percent of positions, so
+        ordinary sampling barely rewards finding it. With `tactical_fraction` that
+        share of the windows is built around a tactical position instead, placed
+        at a random ply of the window so the model sees it with different amounts
+        of history.
         """
         pick = torch.randint(
             len(self.train_positions), (batch,), generator=generator, device=self.device
@@ -196,8 +209,14 @@ class Corpus:
         if count:
             if self.tactical is None:
                 raise ValueError("tactical sampling needs load_tactics() first")
+            which = torch.randint(
+                len(self._set_size), (count,), generator=generator, device=self.device
+            )
+            within = (
+                torch.rand(count, generator=generator, device=self.device) * self._set_size[which]
+            ).long()
             chosen = self.tactical[
-                torch.randint(len(self.tactical), (count,), generator=generator, device=self.device)
+                self._set_start[which] + within.minimum(self._set_size[which] - 1)
             ]
             offset = torch.randint(plies, (count,), generator=generator, device=self.device)
             starts[:count] = torch.maximum(self.game_start[chosen], chosen - offset)

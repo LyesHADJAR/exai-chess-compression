@@ -19,6 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.constants import ModelConfig  # noqa: E402
 
+#: Tactics beyond mate in one: the probe sets and the puzzle themes that go with them.
+EXTRA_PROBES = ("mate_in_two", "free_piece", "fork")
+EXTRA_THEMES = ("mateIn2", "hangingPiece", "fork")
+
 #: The rule, in points of accuracy.
 MIN_GAIN = 2.0
 MAX_TOP1_LOSS = 0.5
@@ -32,7 +36,15 @@ def load(run: Path) -> dict | None:
     config, results, tactics, evaluation = (json.loads((run / n).read_text()) for n in needed)
     model = ModelConfig(**config["model"])
     steering = [r["solved"] for r in evaluation.get("steering", {}).values()]
+    themes = evaluation["puzzle_set"].get("by_theme", {})
+    probes = {}
+    for name in EXTRA_PROBES:
+        path = run / f"tactics_{name}.json"
+        if path.exists():
+            probes[name] = json.loads(path.read_text())
     return {
+        "themes": {t: themes[t]["solved"] * 100 for t in EXTRA_THEMES if t in themes},
+        "probes": probes,
         "name": run.name,
         "params": results["parameters"] / 1e6,
         "tokens": model.stream_tokens,
@@ -76,20 +88,64 @@ def table(rows: list[dict], base: dict) -> str:
     return "\n".join(lines)
 
 
+def extra_table(rows: list[dict]) -> str | None:
+    """Tactics beyond mate in one: puzzle themes, and the model against the humans.
+
+    The probe columns are how often the model's first choice is a move that
+    carries out the tactic, on held-out game positions where one exists. The
+    humans' own rate is the same for every run, so it is printed once.
+    """
+    if not any(r["themes"] or r["probes"] for r in rows):
+        return None
+    head = f"{'arm':<16}" + "".join(f"{'puz ' + t:>17}" for t in EXTRA_THEMES)
+    head += "".join(f"{'game ' + p:>18}" for p in EXTRA_PROBES)
+    lines = [head, "-" * len(head)]
+    for r in rows:
+        cells = "".join(
+            f"{r['themes'][t]:>17.2f}" if t in r["themes"] else f"{'-':>17}" for t in EXTRA_THEMES
+        )
+        cells += "".join(
+            f"{r['probes'][p]['model_plays_mate'] * 100:>18.2f}"
+            if p in r["probes"]
+            else f"{'-':>18}"
+            for p in EXTRA_PROBES
+        )
+        lines.append(f"{r['name']:<16}" + cells)
+    humans = {
+        p: next(r["probes"][p]["human_plays_mate"] * 100 for r in rows if p in r["probes"])
+        for p in EXTRA_PROBES
+        if any(p in r["probes"] for r in rows)
+    }
+    if humans:
+        lines.append(
+            "humans: " + ", ".join(f"{p} {v:.1f}%" for p, v in humans.items()) + " (game columns)"
+        )
+    return "\n".join(lines)
+
+
+#: Pairs of the same run under two seeds: the gap inside a pair is chance.
+SEED_PAIRS = (("baseline", "baseline_seed1"), ("t25", "t25_seed1"))
+
+
 def noise_note(rows: list[dict]) -> str | None:
     by_name = {r["name"]: r for r in rows}
-    if "baseline" not in by_name or "baseline_seed1" not in by_name:
-        return None
-    a, b = by_name["baseline"], by_name["baseline_seed1"]
-    parts = [f"{k} {abs(a[k] - b[k]):.2f}" for k in ("top1", "puzzles", "mate")]
-    gaps = [abs(a["puzzles"] - b["puzzles"]), abs(a["mate"] - b["mate"])]
-    note = f"Run-to-run noise (baseline against itself, other seed), in points: {', '.join(parts)}."
-    if max(gaps) > MIN_GAIN / 2:
-        note += (
-            f"\n  WARNING: that is over half the {MIN_GAIN:g}-point threshold, "
-            "so small gaps are not trustworthy."
+    notes = []
+    for first, second in SEED_PAIRS:
+        if first not in by_name or second not in by_name:
+            continue
+        a, b = by_name[first], by_name[second]
+        parts = [f"{k} {abs(a[k] - b[k]):.2f}" for k in ("top1", "puzzles", "mate")]
+        gaps = [abs(a["puzzles"] - b["puzzles"]), abs(a["mate"] - b["mate"])]
+        note = (
+            f"Run-to-run noise ({first} against itself, other seed), in points: {', '.join(parts)}."
         )
-    return note
+        if max(gaps) > MIN_GAIN / 2:
+            note += (
+                f"\n  WARNING: that is over half the {MIN_GAIN:g}-point threshold, "
+                "so small gaps are not trustworthy."
+            )
+        notes.append(note)
+    return "\n".join(notes) or None
 
 
 def main() -> None:
@@ -107,6 +163,8 @@ def main() -> None:
     print(table(sorted(rows, key=lambda r: (r["name"] != base["name"], r["name"])), base))
     if note := noise_note(rows):
         print("\n" + note)
+    if more := extra_table(sorted(rows, key=lambda r: (r["name"] != base["name"], r["name"]))):
+        print("\nBeyond mate in one:\n" + more)
     if unfinished:
         print(f"\nNot finished: {', '.join(unfinished)}")
     print(

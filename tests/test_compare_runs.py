@@ -94,3 +94,35 @@ def test_no_noise_note_without_both_baselines(tmp_path):
 def test_the_threshold_is_inclusive(tmp_path, gain):
     base, arms = rows(tmp_path, a=dict(mate=30.0 + gain))
     assert verdict(arms["a"], base) == "KEEP"
+
+
+def test_a_run_without_the_extra_probes_still_loads(tmp_path):
+    run = load(make_run(tmp_path, "a"))
+    assert run["probes"] == {} and run["themes"] == {}
+
+
+def test_extra_probes_and_themes_are_read_when_present(tmp_path):
+    from compare_runs import extra_table
+
+    run = make_run(tmp_path, "a")
+    (run / "tactics_fork.json").write_text(
+        json.dumps({"human_plays_mate": 0.3, "model_plays_mate": 0.25})
+    )
+    evaluation = json.loads((run / "evaluation.json").read_text())
+    evaluation["puzzle_set"]["by_theme"] = {"fork": {"solved": 0.4, "puzzles": 10}}
+    (run / "evaluation.json").write_text(json.dumps(evaluation))
+    table = extra_table([load(run)])
+    assert "25.00" in table and "40.00" in table and "humans: fork 30.0%" in table
+
+
+def test_no_extra_table_when_nothing_extra_was_measured(tmp_path):
+    from compare_runs import extra_table
+
+    assert extra_table([load(make_run(tmp_path, "a"))]) is None
+
+
+def test_the_t25_seed_pair_reports_its_own_noise(tmp_path):
+    make_run(tmp_path, "t25", mate=30.0, puzzles=30.0)
+    make_run(tmp_path, "t25_seed1", mate=30.4, puzzles=30.4)
+    note = noise_note([load(tmp_path / "t25"), load(tmp_path / "t25_seed1")])
+    assert "t25 against itself" in note and "WARNING" not in note

@@ -1,7 +1,8 @@
 """
-Find every mate-in-one position in the held-out splits, once.
+Find every position with a given tactic in the held-out splits, once.
 
     python scripts/build_tactics_set.py --corpus data/encoded
+    python scripts/build_tactics_set.py --corpus data/encoded --motif fork --splits train val test
 
 Mate in one is rare, about 0.4% of positions, so sampling a few thousand
 positions finds only a few hundred and leaves the measurement uncertain by
@@ -10,7 +11,9 @@ brings that down to under one. This does the scan once, in parallel, and saves
 the positions and their mating moves so every later model is measured on the
 same fixed set.
 
-Writes `mate_in_one.npz` into `--out`:
+The motifs are mate_in_one (the default), mate_in_two (a forced mate that begins
+with a check), free_piece (a capture that wins a piece) and fork; see
+`chessdt.tactics` for exact definitions. Writes `<motif>.npz` into `--out`:
 
     position   global index of each position in the corpus
     split      its split label, so validation and test stay separate
@@ -22,6 +25,7 @@ import argparse
 import os
 import sys
 import time
+from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
 
@@ -31,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from chessdt.encoding import BOARD_RECORD_BYTES  # noqa: E402
 from chessdt.splits import TEST, TRAIN, VAL  # noqa: E402
-from chessdt.tactics import scan_mates  # noqa: E402
+from chessdt.tactics import MOTIFS, MOVE_TO_SQUARE, NO_PREVIOUS, scan_block  # noqa: E402
 
 BLOCK = 4000  # positions per task; small enough to balance, large enough to amortise
 
@@ -45,6 +49,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--corpus", type=Path, default=Path("data/encoded"))
     ap.add_argument("--out", type=Path, default=Path("data/tactics"))
+    ap.add_argument("--motif", choices=sorted(MOTIFS), default="mate_in_one")
     ap.add_argument("--workers", type=int, default=min(os.cpu_count() or 1, DEFAULT_WORKERS))
     ap.add_argument(
         "--splits",
@@ -61,18 +66,31 @@ def main() -> None:
     chosen = {"train": int(TRAIN), "val": int(VAL), "test": int(TEST)}
     wanted = np.flatnonzero(np.isin(labels, [chosen[name] for name in args.splits]))
     print(
-        f"Scanning {len(wanted):,} positions ({', '.join(args.splits)}) for a mate in one ...",
+        f"Scanning {len(wanted):,} positions ({', '.join(args.splits)}) for {args.motif} ...",
         flush=True,
     )
 
+    # Where the previous move of each position's game landed, so that a recapture
+    # can be told from a capture. A game's first position has none.
+    played = np.fromfile(args.corpus / "moves.bin", dtype=np.uint16)
+    first = np.zeros(len(records), dtype=bool)
+    first[np.load(args.corpus / "games.npz")["offset"]] = True
+    previous = np.full(len(wanted), NO_PREVIOUS, dtype=np.uint8)
+    follows = ~first[wanted]
+    previous[follows] = MOVE_TO_SQUARE[played[wanted[follows] - 1]]
+
     blocks = [wanted[i : i + BLOCK] for i in range(0, len(wanted), BLOCK)]
-    payloads = [np.ascontiguousarray(records[b]).tobytes() for b in blocks]
+    payloads = [
+        (np.ascontiguousarray(records[b]).tobytes(), previous[i : i + BLOCK].tobytes())
+        for i, b in zip(range(0, len(wanted), BLOCK), blocks, strict=True)
+    ]
 
     started = time.monotonic()
     positions, split, offsets, moves = [], [], [0], []
     with Pool(args.workers) as pool:
         for done, (block, found) in enumerate(
-            zip(blocks, pool.imap(scan_mates, payloads), strict=True), start=1
+            zip(blocks, pool.imap(partial(scan_block, motif=args.motif), payloads), strict=True),
+            start=1,
         ):
             for row, mates in found:
                 positions.append(int(block[row]))
@@ -85,7 +103,7 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     np.savez(
-        args.out / "mate_in_one.npz",
+        args.out / f"{args.motif}.npz",
         position=np.asarray(positions, dtype=np.int64),
         split=np.asarray(split, dtype=np.uint8),
         offset=np.asarray(offsets, dtype=np.int64),
@@ -95,10 +113,10 @@ def main() -> None:
     for name in args.splits:
         n = int((split == chosen[name]).sum())
         print(
-            f"  {name:<6}{n:>8,} positions with a mate in one "
+            f"  {name:<6}{n:>8,} positions with {args.motif} "
             f"(standard error about {(0.25 / max(n, 1)) ** 0.5 * 100:.1f} points)"
         )
-    print(f"Wrote {args.out / 'mate_in_one.npz'}")
+    print(f"Wrote {args.out / (args.motif + '.npz')}")
 
 
 if __name__ == "__main__":

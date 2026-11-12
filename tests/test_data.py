@@ -242,3 +242,38 @@ def test_a_window_with_no_tactical_share_needs_no_tactics_loaded(corpus):
     # Once annealed to zero the sampler must not demand the tactical positions.
     batch = corpus.sample_train(4, 3, torch.Generator().manual_seed(0), tactical_fraction=0.0)
     assert batch.moves.shape == (4, 3)
+
+
+def test_several_tactic_sets_are_mixed_evenly(corpus, tmp_path):
+    # Set A holds one position, set B holds four: an even mix still picks A half the time.
+    tactics_file(tmp_path / "a.npz", [0], [int(TRAIN)])
+    tactics_file(tmp_path / "b.npz", [1, 2, 3, 4], [int(TRAIN)] * 4)
+    assert corpus.load_tactics([tmp_path / "a.npz", tmp_path / "b.npz"]) == 5
+
+    generator = torch.Generator().manual_seed(0)
+    first = torch.cat(
+        [
+            corpus.sample_train(32, 1, generator, tactical_fraction=1.0).moves[:, 0]
+            for _ in range(40)
+        ]
+    )
+    from_a = (first == MOVE_TO_INDEX["e2e4"]).float().mean().item()  # only position 0 plays e2e4
+    assert 0.42 < from_a < 0.58
+
+
+def test_every_position_of_every_set_is_reachable(corpus, tmp_path):
+    tactics_file(tmp_path / "a.npz", [0, 1], [int(TRAIN)] * 2)
+    tactics_file(tmp_path / "b.npz", [3, 4], [int(TRAIN)] * 2)
+    corpus.load_tactics([tmp_path / "a.npz", tmp_path / "b.npz"])
+    generator = torch.Generator().manual_seed(1)
+    seen = set()
+    for _ in range(60):
+        seen.update(
+            corpus.sample_train(8, 1, generator, tactical_fraction=1.0).moves[:, 0].tolist()
+        )
+    assert len(seen) == 4  # moves of positions 0, 1, 3 and 4 are all different
+
+
+def test_one_file_still_loads_as_a_single_path(corpus, tmp_path):
+    tactics_file(tmp_path / "a.npz", [0], [int(TRAIN)])
+    assert corpus.load_tactics(str(tmp_path / "a.npz")) == 1

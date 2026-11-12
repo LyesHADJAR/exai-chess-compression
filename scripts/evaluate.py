@@ -131,6 +131,8 @@ def main() -> None:
         print(f"  solved        {p['solved'] * 100:6.2f}%")
         print(f"  in top three  {p['solution_in_top3'] * 100:6.2f}%")
         print(f"  mate in one   {p['mate_in_one'] * 100:6.2f}%   ({p['mate_in_one_puzzles']:,})")
+        for theme, r in p["by_theme"].items():
+            print(f"  theme {theme:<17}{r['solved'] * 100:6.2f}%   ({r['puzzles']:,})")
         for band, r in p["by_rating"].items():
             print(f"  rated {band:<10} {r['solved'] * 100:6.2f}%   ({r['puzzles']:,})")
 

@@ -140,6 +140,20 @@ def normalised_rating(elo: float) -> float:
     return (elo - ELO_CENTRE) / ELO_SCALE
 
 
+#: Puzzle themes worth a line of their own: the motifs the tactical arms train on,
+#: and the common ones around them.
+REPORTED_THEMES = (
+    "mateIn1",
+    "mateIn2",
+    "fork",
+    "hangingPiece",
+    "pin",
+    "skewer",
+    "discoveredAttack",
+    "backRankMate",
+)
+
+
 @dataclass
 class PuzzleSet:
     """A sample of the puzzle database, resident on one device.
@@ -157,6 +171,7 @@ class PuzzleSet:
     rating: np.ndarray
     mate_in_one: np.ndarray
     device: str
+    themes: np.ndarray | None = None  # the puzzle database's theme string, one per puzzle
 
     @classmethod
     def load(cls, directory: Path, sample: int, device: str, seed: int = 0) -> "PuzzleSet":
@@ -183,6 +198,7 @@ class PuzzleSet:
             rating=rating[pick],
             mate_in_one=np.asarray([b"mateIn1" in t for t in themes[pick]]),
             device=device,
+            themes=themes[pick],
         )
 
     def __len__(self) -> int:
@@ -234,6 +250,17 @@ class PuzzleSet:
                     "puzzles": int(inside.sum()),
                 }
 
+        by_theme = {}
+        if self.themes is not None:
+            tokens = [set(t.split()) for t in self.themes]
+            for theme in REPORTED_THEMES:
+                inside = np.asarray([theme.encode() in t for t in tokens])
+                if inside.any():
+                    by_theme[theme] = {
+                        "solved": float(solved[inside].mean()),
+                        "puzzles": int(inside.sum()),
+                    }
+
         return {
             "puzzles": len(self),
             "solved": float(solved.mean()),
@@ -242,4 +269,5 @@ class PuzzleSet:
             "mate_in_one": float(solved[self.mate_in_one].mean()),
             "mate_in_one_puzzles": int(self.mate_in_one.sum()),
             "by_rating": bands,
+            "by_theme": by_theme,
         }
