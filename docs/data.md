@@ -14,6 +14,20 @@ Google Drive: **EXAI Chess Compression — Data**
 | `03-splits` | train, val, agreement and puzzle sets after deduplication |
 | `04-checkpoints` | trained reference models and their compressed variants |
 
+## The v2 corpus and the team data package
+
+The frozen reference was trained on the v2 corpus: the 300,000-game corpus above
+plus four more months (2026-05 to 2026-08, 350,000 games each, both players rated
+1000 or above), 1.7 million games and 121,217,659 positions in all. A game's
+split depends only on its ID, so the held-out games of the first corpus keep
+their places. 20.1% of the held-out positions also occur in training and are
+marked label 3 (never scored).
+
+For teammates it is packed as 12 parts of 500 MB with checksums, in the Drive
+subfolder `v2 data`. Unpacking, the file format and the comparison numbers are in
+[data_package_README.md](data_package_README.md). Build commands are in
+[experiments.md](experiments.md).
+
 ## Sources
 
 All from Lichess, all CC0.

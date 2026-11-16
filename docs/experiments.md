@@ -93,3 +93,41 @@ DATA=data/v2 TACTICS=data/v2_tactics PUZZLES=data/puzzles_v2 bash scripts/run_wa
 
 The held-out games of the reference corpus keep their places in the merged one,
 because a game's split depends only on its ID, so the two corpora can be compared.
+
+## Round three, and the frozen reference
+
+Round three asked whether tactics beyond mate in one (mate in two, free piece,
+fork) help when mixed into the tactical windows. They did not. The tactical
+emphasis is a fixed budget of windows, so every extra motif set takes share away
+from mate in one and dilutes it. The 25% mate-in-one emphasis (`t25`) stays.
+
+The last change was length. The same `m18` recipe was run for 200,000 steps
+(about 7.5 passes over the v2 corpus, 488 minutes on one GPU slice) as
+`v3_m18_200k`, against `v2_m18` at 100,000 steps:
+
+| Measure | `v2_m18` (100k) | `v3_m18_200k` |
+|---|---|---|
+| Test top-1 / top-3 | 49.04 / 76.60 | 50.98 / 78.38 |
+| Puzzles solved | 53.80 | 57.16 |
+| Mate in one played in games | 65.7 | 69.4 |
+
+It clears the rule above (more than 2 points on puzzles and on mate, with no
+top-1 loss), so it is the reference. Noise between two seeds is about 0.4 to 0.5
+points of top-1, 0.8 to 0.9 of puzzles and 0.6 to 0.7 of mate.
+
+Reproduce it:
+
+```bash
+env DATA=data/v2 TACTICS=data/v2_tactics PUZZLES=data/puzzles_v2 STEPS=200000 \
+    EVAL_EVERY=5000 PUZZLE_SAMPLE=50000 \
+    bash scripts/run_arm.sh v3_m18_200k --preset m18 \
+    --tactics data/v2_tactics/mate_in_one.npz --tactical-fraction 0.25
+```
+
+`run_arm.sh` reads `DATA`, `TACTICS`, `PUZZLES`, `STEPS`, `EVAL_EVERY` and
+`PUZZLE_SAMPLE` from the environment. Exported leftovers from an earlier run will
+silently redirect the next one, so check `env | grep -E '^(DATA|TACTICS|PUZZLES|STEPS)='`
+before starting a wave.
+
+The checkpoint is not in git. Its SHA256 is
+`dd927251e32eea7866e34e6a1c86ee8086b0260611191293301d80a7d734ad69`.

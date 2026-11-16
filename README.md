@@ -19,8 +19,8 @@ current position.
 | Conditioning | outcome-to-go and rating of the player to move |
 | Output | softmax over 1,968 UCI moves, illegal moves masked |
 | Context | 16 plies |
-| Parameters | 11,284,656 |
-| Released artifact | about 43 MB, fp32 |
+| Parameters | about 17.6 million (`m18` preset) |
+| Released artifact | 70,549,562 bytes (67.3 MiB), fp32 |
 | Training data | Lichess, human games, behavioural cloning |
 
 The parameter count is deliberately tight. A model with slack in it is trivial
@@ -37,9 +37,27 @@ to compress, which makes for a challenge nobody can win on skill.
 
 ## Status
 
-The data pipeline and the corpus are done: 300,000 games, 22.7M positions,
-split and deduplicated. The model, the training loop and the evaluation are
-written and tested. The reference model has not been trained yet.
+The reference model is **frozen**: `v3_m18_200k`, 17.6M parameters, trained for
+200,000 steps on the v2 corpus (1.7M games, 121M positions) with 25% of the
+windows built around a mate in one. Earlier models are kept as fallbacks (`v2_m18`
+at 100,000 steps, then the 11.3M v1).
+
+On the common benchmark (the v1 test split, 71,954 positions, plus 50,000 sampled
+puzzles):
+
+| Measure | v1 (11.3M) | Frozen reference |
+|---|---|---|
+| Test top-1 / top-3 | 44.19 / 71.64 | 50.98 / 78.38 |
+| Puzzles solved, illegal moves masked | 31.49 | 57.16 |
+| Mate in one played in real games (humans 73.5) | 33.2 | 69.4 |
+
+The input ablations and the compressibility check were run on the frozen model:
+emptying the board changes 99.7% of predictions, and the standard methods separate
+widely (int8 keeps 98.1% agreement with the reference, int4 71.1%, int3 38.1%,
+30% magnitude pruning 73.5%, low rank under 3%). The scoring harness and the
+submission format are still a draft. Training data for teammates is described in
+[docs/data_package_README.md](docs/data_package_README.md); a four-page summary is in
+[docs/reports/team_report.pdf](docs/reports/team_report.pdf).
 
 ## Getting started
 
